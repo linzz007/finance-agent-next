@@ -1,0 +1,31 @@
+{
+  "schema_version": "finance.model_profiles.v1",
+  "profiles": {
+    "gpt": {
+      "display_name": "GPT 6.1 Sol",
+      "model_id": "gpt-6.1-sol",
+      "base_url": "https://www.cctq.ai/v1",
+      "protocol": "openai-compatible",
+      "auth_env": "ANTHROPIC_AUTH_TOKEN",
+      "stream": true
+    },
+    "gpt-responses": {
+      "display_name": "GPT 6.1 Sol (Responses)",
+      "model_id": "gpt-6.1-sol",
+      "base_url": "https://www.cctq.ai/v1",
+      "protocol": "openai-responses",
+      "auth_env": "ANTHROPIC_AUTH_TOKEN",
+      "stream": true
+    },
+    "deepseek": {
+      "display_name": "DeepSeek-V4.1-Flash",
+      "model_id": "deepseek-flash",
+      "base_url": "https://api.deepseek.com",
+      "protocol": "openai-compatible",
+      "auth_env": "DEEPSEEK_API_KEY",
+      "stream": true,
+      "thinking": true,
+      "reasoning_effort": "high"
+    }
+  }
+}

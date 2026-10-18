@@ -1,0 +1,12 @@
+{
+  "schema_version": "finance.skill_catalog.v1",
+  "skills": [
+    {"skill_id": "source_access", "description": "查找并逐篇读取文章、Wiki、网页或行情；保留作者、日期、真实读取范围和口径。", "module": "finance/source_access.md", "tools": ["article.list", "article.read", "article.claims", "article.study", "company_wiki_search", "memory_search", "web.search", "web.open", "source.discover", "source.fetch", "market.catalog", "market.snapshot", "market.metrics", "market.series", "finance.report_read"]},
+    {"skill_id": "research_plan", "description": "记录用户目标、范围、完成条件与进度；区分研究完成和实际交付。", "module": "finance/research_plan.md", "tools": ["research.plan"]},
+    {"skill_id": "research_coverage", "description": "判断已读材料能否覆盖问题，记录反例、缺口及继续取材或综合的理由。", "module": "finance/research_coverage.md", "tools": ["research.coverage"]},
+    {"skill_id": "evidence_review", "description": "实质回答前读取：选择重要验证目标、绑定证据、修订或带局限交付；包含审核目标结构。", "module": "finance/evidence_review.md", "tools": ["research.checkpoint", "research.verify"]},
+    {"skill_id": "subagent_review", "description": "按任务选择分析、反例或核验角色，明确授权和返回要求，不把委派当成已验证。", "module": "finance/subagent_review.md", "tools": []},
+    {"skill_id": "research_artifacts", "description": "保存和恢复当前运行的分析产物及原样观察，不将保存等同于已读、已采用或独立证据。", "module": "finance/research_artifacts.md", "tools": ["research.artifact", "context.open", "research.synthesize"]},
+    {"skill_id": "versioned_research", "description": "需要新版连贯文章理解或跨篇综合委派时读取：analyst@2.0.0 任务、证据交接和父任务处置。", "module": "finance/versioned_research.md", "tools": ["research.artifact", "research.disposition"]}
+  ]
+}

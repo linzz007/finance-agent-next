@@ -1,0 +1,391 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2880" height="3000" viewBox="0 0 2880 3000" role="img" aria-labelledby="title desc">
+<title id="title">Agent Workbench 三个工作空间的真实执行全景</title>
+<desc id="desc">同花顺、Agent 自进化和金融观察共用 Runtime、Skill 路由、上下文与存储机制。同花顺和 Agent 自进化共用资料研判流程，金融观察使用行情与归因核查流程。包括普通对话、前置委派、循环内委派、固定报告工作流、只读追问、权限、Trace 和产物。</desc>
+<defs>
+ <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+ <marker id="return" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#087d70"/></marker>
+ <style>
+  text { font-family: 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; fill:#18252c; letter-spacing:0; }
+  .title { font-size:44px; font-weight:700; }
+  .section { font-size:29px; font-weight:700; }
+  .node-title { font-size:25px; font-weight:700; }
+  .body { font-size:23px; }
+  .small { font-size:20px; fill:#43545d; }
+  .code { font-family: Consolas,'Microsoft YaHei',monospace; font-size:19px; fill:#425762; }
+  .port-label { font-size:21px; font-weight:700; }
+  .flow { stroke:#64748b; stroke-width:2.6; fill:none; marker-end:url(#arrow); }
+  .return { stroke:#087d70; stroke-width:2.6; fill:none; stroke-dasharray:8 6; marker-end:url(#return); }
+ </style>
+</defs>
+<rect width="2880" height="3000" fill="#ffffff"/>
+
+<text x="60" y="66" class="title" font-size="44" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">Agent Workbench · 三个工作空间执行全景</text>
+<text x="60" y="108" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">按当前代码核对 · 2026-09-24  |  同色表示同一类组件，箭头表示执行顺序，虚线表示回填或辅助数据流</text>
+<text x="2060" y="108" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">A / B / C 为跨区连接端口，不是新增步骤</text>
+<g id="ths" data-node="true"><rect x="60" y="150" width="890" height="180" rx="8" fill="#f0f5fc" stroke="#b4c8e1" stroke-width="1.5"/>
+<rect x="60" y="166" width="5" height="32" rx="2" fill="#356899"/>
+<text x="83" y="189" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">同花顺 · 企业研判</text>
+<text x="83" y="225" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">Wiki：企业、产品边界、业务事实、关注主题与限制。</text>
+<text x="83" y="256" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">问题：政策、行业事件、技术变化与企业有什么关系？</text>
+<text x="83" y="290" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">company_001 → 共享资料研判管线 A</text>
+</g>
+<g id="agent" data-node="true"><rect x="990" y="150" width="900" height="180" rx="8" fill="#f0f5fc" stroke="#b4c8e1" stroke-width="1.5"/>
+<rect x="990" y="166" width="5" height="32" rx="2" fill="#356899"/>
+<text x="1013" y="189" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">Agent 自进化 · 个人技术调研</text>
+<text x="1013" y="225" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">Wiki：个人身份、技术兴趣、研究方向与筛选偏好。</text>
+<text x="1013" y="256" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">问题：哪些论文、开源框架与技术值得研究？</text>
+<text x="1013" y="290" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">agent_self_evolution → 同一条共享资料管线 A</text>
+</g>
+<g id="finance" data-node="true"><rect x="1930" y="150" width="890" height="180" rx="8" fill="#fff7e9" stroke="#e2c994" stroke-width="1.5"/>
+<rect x="1930" y="166" width="5" height="32" rx="2" fill="#9a6518"/>
+<text x="1953" y="189" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">个人金融观察 · 宏观与跨资产</text>
+<text x="1953" y="225" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">Wiki + 金融档案：关注资产、区间、口径与偏好。</text>
+<text x="1953" y="256" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">问题：美股、黄金和白银怎样变化？原因有哪些证据？</text>
+<text x="1953" y="290" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">finance_observer → 启用金融能力 B</text>
+</g>
+<path d="M505 330 V356 H1440" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="1440,356 1428,351 1428,361" fill="#64748b"/>
+<path d="M2375 330 V356 H1440" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="1440,356 1452,361 1452,351" fill="#64748b"/>
+<path d="M1440 330 V378 H32 V558 H60" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="60,558 48,553 48,563" fill="#64748b"/>
+<text x="1570" y="386" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">切换 company_id：换资料、历史与能力条件，不复制一套 Runtime</text>
+<text x="60" y="423" class="section" font-size="29" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">01  共用入口：一轮请求如何被接住</text>
+<g id="entry" data-node="true"><rect x="60" y="455" width="470" height="208" rx="8" fill="#eff7f5" stroke="#a7cec5" stroke-width="1.5"/>
+<rect x="60" y="471" width="5" height="32" rx="2" fill="#087d70"/>
+<text x="83" y="494" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">页面 / API / Service</text>
+<text x="83" y="530" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">选择空间、会话、模型；发送 query。</text>
+<text x="83" y="561" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">SSE 与普通 POST 共用执行内核。</text>
+<text x="83" y="595" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">api.py → ChatWorkbenchService</text>
+<text x="83" y="621" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">company_id / session_id / model_id</text>
+</g>
+<g id="runtime" data-node="true"><rect x="595" y="455" width="490" height="208" rx="8" fill="#eff7f5" stroke="#a7cec5" stroke-width="1.5"/>
+<rect x="595" y="471" width="5" height="32" rx="2" fill="#087d70"/>
+<text x="618" y="494" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">AgentRuntime → TurnCoordinator</text>
+<text x="618" y="530" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">校验请求、BeforeTurn Hook。</text>
+<text x="618" y="561" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">prepare / execute 分离；防重复执行。</text>
+<text x="618" y="595" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">run_turn / prepare_turn</text>
+<text x="618" y="621" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">execute_prepared_turn → _execute_locked</text>
+</g>
+<g id="skill" data-node="true"><rect x="1150" y="455" width="480" height="208" rx="8" fill="#eff7f5" stroke="#a7cec5" stroke-width="1.5"/>
+<rect x="1150" y="471" width="5" height="32" rx="2" fill="#087d70"/>
+<text x="1173" y="494" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">Skill 路由 + 创建 AgentRun</text>
+<text x="1173" y="530" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">解析 /report；默认 general_chat。</text>
+<text x="1173" y="561" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">金融空间可识别自然语言报告请求。</text>
+<text x="1173" y="595" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">SkillRegistry → SkillManifest</text>
+<text x="1173" y="621" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">executor / tools / roles / budgets</text>
+</g>
+<g id="context" data-node="true"><rect x="1695" y="455" width="525" height="208" rx="8" fill="#eff7f5" stroke="#a7cec5" stroke-width="1.5"/>
+<rect x="1695" y="471" width="5" height="32" rx="2" fill="#087d70"/>
+<text x="1718" y="494" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">按本轮任务构建 Context</text>
+<text x="1718" y="530" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">历史与摘要、相关 Memory、Wiki 事实。</text>
+<text x="1718" y="561" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">报告证据按需回读；记录可见范围/预算。</text>
+<text x="1718" y="595" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">_build_context → compile_chat_context</text>
+<text x="1718" y="621" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">ContextManifest（并非每轮全量注入）</text>
+</g>
+<g id="executor" data-node="true"><rect x="2285" y="455" width="535" height="208" rx="8" fill="#eff7f5" stroke="#a7cec5" stroke-width="1.5"/>
+<rect x="2285" y="471" width="5" height="32" rx="2" fill="#087d70"/>
+<text x="2308" y="494" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">ExecutorRegistry.execute</text>
+<text x="2308" y="530" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">传入 SkillExecutionContext。</text>
+<text x="2308" y="561" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">同一入口分为普通对话与报告执行器。</text>
+<text x="2308" y="595" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">general_chat / external_impact_report</text>
+<text x="2308" y="621" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">最终统一返回 SkillResult</text>
+</g>
+<path d="M530 558 H595" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="595,558 583,553 583,563" fill="#64748b"/>
+<path d="M1085 558 H1150" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="1150,558 1138,553 1138,563" fill="#64748b"/>
+<path d="M1630 558 H1695" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="1695,558 1683,553 1683,563" fill="#64748b"/>
+<path d="M2220 558 H2285" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="2285,558 2273,553 2273,563" fill="#64748b"/>
+<path d="M2552 663 V701 H810 V778" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="810,778 815,766 805,766" fill="#64748b"/>
+<path d="M2552 701 V778" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="2552,778 2557,766 2547,766" fill="#64748b"/>
+<text x="810" y="736" class="small" text-anchor="middle" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">默认普通对话</text>
+<text x="2340" y="736" class="small" text-anchor="middle" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">/report 或金融报告意图</text>
+<text x="60" y="800" class="section" font-size="29" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">02  普通聊天：由 Agent 决策、观察、继续</text>
+<text x="60" y="833" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">三个空间共用；金融档案存在时，额外暴露金融分析与只读工具</text>
+<text x="1690" y="800" class="section" font-size="29" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">03  报告 Skill：把固定流程嵌入 Loop</text>
+<text x="1690" y="833" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">不是与对话分离的另一个应用，也不是随意自由规划所有阶段</text>
+<g id="predelegate" data-node="true"><rect x="60" y="862" width="1530" height="129" rx="8" fill="#fff2ed" stroke="#e2b3a1" stroke-width="1.5"/>
+<rect x="60" y="878" width="5" height="32" rx="2" fill="#a45135"/>
+<text x="83" y="901" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">当前代码还保留：显式多角度请求的前置委派</text>
+<text x="83" y="937" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">_should_predelegate_subagents 命中 → 规划任务 → 调用同一 SubagentRunner → 将结果注入主循环。</text>
+<text x="83" y="964" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">这条路径在主 Loop 之前；另一条动态 delegate 路径在 Loop 内。两条都画出，不把意图当作实现。</text>
+</g>
+<path d="M385 991 V1030" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="385,1030 390,1018 380,1018" fill="#64748b"/>
+<g id="mainloop" data-node="true"><rect x="60" y="1030" width="665" height="240" rx="8" fill="#eff7f5" stroke="#a7cec5" stroke-width="1.5"/>
+<rect x="60" y="1046" width="5" height="32" rx="2" fill="#087d70"/>
+<text x="83" y="1069" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">主 AgentLoop / ModelGateway</text>
+<text x="83" y="1105" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">本轮问题 + 可见证据 + 角色目录。</text>
+<text x="83" y="1136" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">模型输出 final / delegate / tool_call。</text>
+<text x="83" y="1167" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">每次收到 observation 后再次决定。</text>
+<text x="83" y="1201" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">_run_general_chat_agent_loop</text>
+<text x="83" y="1227" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">受总步数、模型调用数与超时预算约束</text>
+</g>
+<g id="subagent" data-node="true"><rect x="865" y="1030" width="725" height="240" rx="8" fill="#f6f2fa" stroke="#cbbbdb" stroke-width="1.5"/>
+<rect x="865" y="1046" width="5" height="32" rx="2" fill="#79539b"/>
+<text x="888" y="1069" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">SubagentRunner：隔离子任务</text>
+<text x="888" y="1105" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">collector / analyst / skeptic / verifier。</text>
+<text x="888" y="1136" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">TaskBrief → 角色与调用方工具权限取交集。</text>
+<text x="888" y="1167" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">只读委派 artifact → 子 Loop → 输出 Schema。</text>
+<text x="888" y="1198" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">结果/失败原因/parent span 回填主 Agent。</text>
+<text x="888" y="1232" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">manifests.json + roles.json + 角色 Prompt</text>
+</g>
+<path d="M725 1094 H865" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="865,1094 853,1089 853,1099" fill="#64748b"/>
+<text x="795" y="1076" class="code" text-anchor="middle" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">delegate</text>
+<path d="M1180 1270 V1300 H460 V1270" fill="none" stroke="#087d70" stroke-width="2.6" stroke-dasharray="8 6"/>
+<polygon points="460,1270 455,1282 465,1282" fill="#087d70"/>
+<text x="715" y="1328" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">SubagentResult → observation → 下一次决策</text>
+<path d="M385 1270 V1362" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="385,1362 390,1350 380,1350" fill="#64748b"/>
+<text x="210" y="1330" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">tool_call</text>
+<g id="finance-chat-tools" data-node="true"><rect x="60" y="1362" width="1050" height="178" rx="8" fill="#fff7e9" stroke="#e2c994" stroke-width="1.5"/>
+<rect x="60" y="1378" width="5" height="32" rx="2" fill="#9a6518"/>
+<text x="83" y="1401" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">金融空间的循环工具</text>
+<text x="83" y="1437" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">finance.analyze → B：新分析，默认不发布 HTML。</text>
+<text x="83" y="1468" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">finance.report_read：只读本会话授权快照；刷新须明确重新分析。</text>
+<text x="83" y="1502" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">普通概念问题可直接 final；非金融聊天不默认联网研究</text>
+</g>
+<path d="M60 1438 H34 V1150 H60" fill="none" stroke="#087d70" stroke-width="2.6" stroke-dasharray="8 6"/>
+<polygon points="60,1150 48,1145 48,1155" fill="#087d70"/>
+<circle cx="1170" cy="1415" r="19" fill="#9a6518"/>
+<text x="1170" y="1422" class="port-label" text-anchor="middle" style="fill:white" font-size="21" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="white">B</text>
+<path d="M1110 1415 H1150" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="1150,1415 1138,1410 1138,1420" fill="#64748b"/>
+<circle cx="1450" cy="1438" r="19" fill="#087d70"/>
+<text x="1450" y="1445" class="port-label" text-anchor="middle" style="fill:white" font-size="21" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="white">C</text>
+<text x="1250" y="1400" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">final + 本路径校验</text>
+<text x="1240" y="1493" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">进入统一收尾 C</text>
+<path d="M725 1210 H825 V1345 H1450 V1419" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="1450,1419 1455,1407 1445,1407" fill="#64748b"/>
+<text x="1480" y="1360" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">循环结束</text>
+<g id="reportloop" data-node="true"><rect x="1690" y="862" width="1130" height="157" rx="8" fill="#f0f5fc" stroke="#b4c8e1" stroke-width="1.5"/>
+<rect x="1690" y="878" width="5" height="32" rx="2" fill="#356899"/>
+<text x="1713" y="901" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">/report 对应 external_impact_report</text>
+<text x="1713" y="937" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">_run_external_impact_report 创建受限的外层 AgentLoop。</text>
+<text x="1713" y="968" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">第一步由 Runtime 固定注入 report_workflow.run，并非模型自由选择。</text>
+<text x="1713" y="1002" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">_ForcedFirstActionModelAdapter · tool_call → observation → final</text>
+</g>
+<path d="M2255 1019 V1053" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="2255,1053 2260,1041 2250,1041" fill="#64748b"/>
+<g id="workflow-gateway" data-node="true"><rect x="1690" y="1053" width="1130" height="143" rx="8" fill="#f0f5fc" stroke="#b4c8e1" stroke-width="1.5"/>
+<rect x="1690" y="1069" width="5" height="32" rx="2" fill="#356899"/>
+<text x="1713" y="1092" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">报告工具网关 → _run_external_impact_workflow</text>
+<text x="1713" y="1128" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">A/B 均用 ReportStageGraph 管节点顺序；Gate 的 allow / ask / deny 决定转移。</text>
+<text x="1713" y="1159" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">外层 Loop 不能用通用回答覆盖工作流的失败或边界结论。</text>
+</g>
+<path d="M2255 1196 V1232" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="2255,1232 2260,1220 2250,1220" fill="#64748b"/>
+<g id="domain-router" data-node="true"><rect x="1690" y="1232" width="1130" height="181" rx="8" fill="#f0f5fc" stroke="#b4c8e1" stroke-width="1.5"/>
+<rect x="1690" y="1248" width="5" height="32" rx="2" fill="#356899"/>
+<text x="1713" y="1271" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">按当前空间能力选择业务管线</text>
+<text x="1713" y="1307" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">存在 load_profile(company_id) 金融档案 → 金融管线 B。</text>
+<text x="1713" y="1338" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">否则 → 共享资料管线 A；数据源盘点请求走 source_inventory。</text>
+<text x="1713" y="1369" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">旧政策/新闻/研究实现仍在仓库，不是三套独立公开主入口。</text>
+</g>
+<path d="M1940 1413 V1472 H1920" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="1920,1472 1932,1477 1932,1467" fill="#64748b"/>
+<path d="M2570 1413 V1472 H2560" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="2560,1472 2572,1477 2572,1467" fill="#64748b"/>
+<circle cx="1900" cy="1472" r="19" fill="#356899"/>
+<text x="1900" y="1479" class="port-label" text-anchor="middle" style="fill:white" font-size="21" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="white">A</text>
+<circle cx="2540" cy="1472" r="19" fill="#9a6518"/>
+<text x="2540" y="1479" class="port-label" text-anchor="middle" style="fill:white" font-size="21" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="white">B</text>
+<text x="1940" y="1480" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">共享资料 Workflow</text>
+<text x="2580" y="1480" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">金融 Workflow</text>
+<circle cx="80" cy="1585" r="19" fill="#356899"/>
+<text x="80" y="1592" class="port-label" text-anchor="middle" style="fill:white" font-size="21" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="white">A</text>
+<text x="118" y="1593" class="section" font-size="29" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">同花顺 + Agent 自进化：同一条资料研判管线</text>
+<text x="60" y="1631" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">run_recent_news_report · 差别由 Query + Wiki 决定；不把企业资料默认变成 Agent 新闻</text>
+<circle cx="1500" cy="1585" r="19" fill="#9a6518"/>
+<text x="1500" y="1592" class="port-label" text-anchor="middle" style="fill:white" font-size="21" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="white">B</text>
+<text x="1538" y="1593" class="section" font-size="29" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">金融观察：同一份分析支持聊天与报告</text>
+<text x="1480" y="1631" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">runtime_adapter.execute → run_finance_report；沿用旧分析时可跳过采集与重新分析</text>
+<g id="info-wiki" data-node="true"><rect x="60" y="1660" width="630" height="163" rx="8" fill="#f0f5fc" stroke="#b4c8e1" stroke-width="1.5"/>
+<rect x="60" y="1676" width="5" height="32" rx="2" fill="#356899"/>
+<text x="83" y="1699" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">A1  Wiki → 本轮研判请求</text>
+<text x="83" y="1735" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">身份/事实 + Query → ReportRequest。</text>
+<text x="83" y="1766" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">时间、主题、来源要求、数量与排除项。</text>
+<text x="83" y="1800" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">wiki_context / discovery_plan</text>
+</g>
+<g id="info-source" data-node="true"><rect x="770" y="1660" width="630" height="163" rx="8" fill="#f0f5fc" stroke="#b4c8e1" stroke-width="1.5"/>
+<rect x="770" y="1676" width="5" height="32" rx="2" fill="#356899"/>
+<text x="793" y="1699" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">A2  共享来源池 → 原始快照</text>
+<text x="793" y="1735" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">政策官网 / GitHub / 论文 / RSS / 新闻。</text>
+<text x="793" y="1766" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">按计划探查；保留来源状态与失败信息。</text>
+<text x="793" y="1800" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">source_collection · config/sources.json</text>
+</g>
+<g id="info-filter" data-node="true"><rect x="60" y="1880" width="630" height="169" rx="8" fill="#f0f5fc" stroke="#b4c8e1" stroke-width="1.5"/>
+<rect x="60" y="1896" width="5" height="32" rx="2" fill="#356899"/>
+<text x="83" y="1919" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">A3  清洗、结构化、筛选</text>
+<text x="83" y="1955" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">合并后二次去重 → 事件结构。</text>
+<text x="83" y="1986" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">按时间/正文质量/原文要求/主题过滤。</text>
+<text x="83" y="2017" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">保留排除原因；无证据不为凑数补齐。</text>
+</g>
+<g id="info-analysis" data-node="true"><rect x="770" y="1880" width="630" height="169" rx="8" fill="#f0f5fc" stroke="#b4c8e1" stroke-width="1.5"/>
+<rect x="770" y="1896" width="5" height="32" rx="2" fill="#356899"/>
+<text x="793" y="1919" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">A4  Wiki 事实匹配 + 影响分析</text>
+<text x="793" y="1955" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">规则初筛和排序 → 模型中文摘要与研判。</text>
+<text x="793" y="1986" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">输出条件、影响、建议、限制及引用。</text>
+<text x="793" y="2017" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">校验 Schema / fact / source 关联。</text>
+</g>
+<g id="info-gate" data-node="true"><rect x="60" y="2106" width="630" height="167" rx="8" fill="#f0f5fc" stroke="#b4c8e1" stroke-width="1.5"/>
+<rect x="60" y="2122" width="5" height="32" rx="2" fill="#356899"/>
+<text x="83" y="2145" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">A5  质量与覆盖门控</text>
+<text x="83" y="2181" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">filtering 与 impact_analysis 两处 Gate。</text>
+<text x="83" y="2212" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">证据缺失走 ask → 受限报告，状态 partial。</text>
+<text x="83" y="2243" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">未来窗口仅说明未发布，不编造结论。</text>
+</g>
+<g id="info-output" data-node="true"><rect x="770" y="2106" width="630" height="167" rx="8" fill="#f0f5fc" stroke="#b4c8e1" stroke-width="1.5"/>
+<rect x="770" y="2122" width="5" height="32" rx="2" fill="#356899"/>
+<text x="793" y="2145" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">A6  HTML / Markdown / RunArtifact</text>
+<text x="793" y="2181" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">结论、信息摘要、影响建议、来源附录。</text>
+<text x="793" y="2212" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">保存本次 Wiki、来源快照与阶段结果。</text>
+<text x="793" y="2243" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">返回上层报告 Loop，支持下一轮追问。</text>
+</g>
+<g id="fin-collect" data-node="true"><rect x="1480" y="1660" width="630" height="163" rx="8" fill="#fff7e9" stroke="#e2c994" stroke-width="1.5"/>
+<rect x="1480" y="1676" width="5" height="32" rx="2" fill="#9a6518"/>
+<text x="1503" y="1699" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">B1  固定请求 → finance.collect</text>
+<text x="1503" y="1735" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">资产 / 日期 / session / quality policy。</text>
+<text x="1503" y="1766" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">行情供应商 + 宏观或机构原文 → 快照。</text>
+<text x="1503" y="1800" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">profile / acquisition · finance_sources.json</text>
+</g>
+<g id="fin-metrics" data-node="true"><rect x="2190" y="1660" width="630" height="163" rx="8" fill="#fff7e9" stroke="#e2c994" stroke-width="1.5"/>
+<rect x="2190" y="1676" width="5" height="32" rx="2" fill="#9a6518"/>
+<text x="2213" y="1699" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">B2  数据校验 → 指标 → 覆盖门控</text>
+<text x="2213" y="1735" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">Schema、品种、时区、完整日线、基准。</text>
+<text x="2213" y="1766" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">代码计算行情；严格证据不足在 coverage 阻断。</text>
+<text x="2213" y="1800" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">validation / metrics / coverage gate</text>
+</g>
+<g id="fin-audit" data-node="true"><rect x="1480" y="1880" width="630" height="169" rx="8" fill="#fff7e9" stroke="#e2c994" stroke-width="1.5"/>
+<rect x="1480" y="1896" width="5" height="32" rx="2" fill="#9a6518"/>
+<text x="1503" y="1919" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">B3  finance.research_audit</text>
+<text x="1503" y="1955" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">文献相对行情时间、证据用途和相关性。</text>
+<text x="1503" y="1986" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">逐资产反向观察、资料缺口、口径限制。</text>
+<text x="1503" y="2017" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">区分事实、候选解释、因果未识别。</text>
+</g>
+<g id="fin-analysis" data-node="true"><rect x="2190" y="1880" width="630" height="169" rx="8" fill="#fff7e9" stroke="#e2c994" stroke-width="1.5"/>
+<rect x="2190" y="1896" width="5" height="32" rx="2" fill="#9a6518"/>
+<text x="2213" y="1919" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">B4  模型分析 → 业务验证</text>
+<text x="2213" y="1955" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">逐资产假设、依据、缺口与检验计划。</text>
+<text x="2213" y="1986" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">Schema / 引文 / 机制与检验一致性校验。</text>
+<text x="2213" y="2017" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">语义复核 + 有限修复；失败不得伪成功。</text>
+</g>
+<g id="fin-saved" data-node="true"><rect x="1480" y="2106" width="630" height="167" rx="8" fill="#fff7e9" stroke="#e2c994" stroke-width="1.5"/>
+<rect x="1480" y="2122" width="5" height="32" rx="2" fill="#9a6518"/>
+<text x="1503" y="2145" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">B5  保存已校验分析与证据</text>
+<text x="1503" y="2181" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">report_id / snapshot_id / analysis。</text>
+<text x="1503" y="2212" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">数据、分析、归因质量状态分开记录。</text>
+<text x="1503" y="2243" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">追问由 report_read 按需展开同一快照。</text>
+</g>
+<g id="fin-output" data-node="true"><rect x="2190" y="2106" width="630" height="167" rx="8" fill="#fff7e9" stroke="#e2c994" stroke-width="1.5"/>
+<rect x="2190" y="2122" width="5" height="32" rx="2" fill="#9a6518"/>
+<text x="2213" y="2145" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">B6  按入口交付</text>
+<text x="2213" y="2181" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">普通分析：确定性投影聊天答案，无 HTML。</text>
+<text x="2213" y="2212" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">报告请求：finance.publish → HTML/MD/JSON。</text>
+<text x="2213" y="2243" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">沿用报告：授权 + 发布校验，不重新采集。</text>
+</g>
+<path d="M690 1741 H770" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="770,1741 758,1736 758,1746" fill="#64748b"/>
+<path d="M1085 1823 V1852 H375 V1880" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="375,1880 380,1868 370,1868" fill="#64748b"/>
+<path d="M690 1964 H770" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="770,1964 758,1959 758,1969" fill="#64748b"/>
+<path d="M1085 2049 V2077 H375 V2106" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="375,2106 380,2094 370,2094" fill="#64748b"/>
+<path d="M690 2189 H770" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="770,2189 758,2184 758,2194" fill="#64748b"/>
+<path d="M2110 1741 H2190" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="2190,1741 2178,1736 2178,1746" fill="#64748b"/>
+<path d="M2505 1823 V1852 H1795 V1880" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="1795,1880 1800,1868 1790,1868" fill="#64748b"/>
+<path d="M2110 1964 H2190" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="2190,1964 2178,1959 2178,1969" fill="#64748b"/>
+<path d="M2505 2049 V2077 H1795 V2106" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="1795,2106 1800,2094 1790,2094" fill="#64748b"/>
+<path d="M2110 2189 H2190" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="2190,2189 2178,2184 2178,2194" fill="#64748b"/>
+<text x="60" y="2320" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">A 产物 → 报告 Loop 的 observation → final；后续聊天通过本会话历史与 report_context 回读报告证据。</text>
+<text x="1480" y="2320" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">B 分析 → 主 Loop 的 observation；首次答案用已验证字段生成，追问另做数字与语义复核。</text>
+<circle cx="80" cy="2380" r="19" fill="#087d70"/>
+<text x="80" y="2387" class="port-label" text-anchor="middle" style="fill:white" font-size="21" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="white">C</text>
+<text x="118" y="2388" class="section" font-size="29" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">04  统一收尾：成功、失败、产物与对话都回到同一个 Run</text>
+<g id="result" data-node="true"><rect x="60" y="2420" width="510" height="160" rx="8" fill="#eff7f5" stroke="#a7cec5" stroke-width="1.5"/>
+<rect x="60" y="2436" width="5" height="32" rx="2" fill="#087d70"/>
+<text x="83" y="2459" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">执行器返回 SkillResult</text>
+<text x="83" y="2495" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">answer / artifacts / citations。</text>
+<text x="83" y="2526" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">Memory 写入先提出计划，不立即提交。</text>
+<text x="83" y="2560" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">暂存 assistant message</text>
+</g>
+<g id="stop" data-node="true"><rect x="625" y="2420" width="510" height="160" rx="8" fill="#eff7f5" stroke="#a7cec5" stroke-width="1.5"/>
+<rect x="625" y="2436" width="5" height="32" rx="2" fill="#087d70"/>
+<text x="648" y="2459" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">Stop Hook 与终止判断</text>
+<text x="648" y="2495" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">执行失败、取消、超时或 ask / deny。</text>
+<text x="648" y="2526" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">未通过时不发布正常成功回答。</text>
+<text x="648" y="2560" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">TurnCoordinator._execute_locked</text>
+</g>
+<g id="commit" data-node="true"><rect x="1190" y="2420" width="510" height="160" rx="8" fill="#eff7f5" stroke="#a7cec5" stroke-width="1.5"/>
+<rect x="1190" y="2436" width="5" height="32" rx="2" fill="#087d70"/>
+<text x="1213" y="2459" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">原子提交终态与记忆计划</text>
+<text x="1213" y="2495" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">AgentRun / AgentStep / 消息 / 引用。</text>
+<text x="1213" y="2526" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">仅成功路径提交批准的 Memory 写入。</text>
+<text x="1213" y="2560" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">commit_agent_run_terminal</text>
+</g>
+<g id="sse" data-node="true"><rect x="1755" y="2420" width="505" height="160" rx="8" fill="#eff7f5" stroke="#a7cec5" stroke-width="1.5"/>
+<rect x="1755" y="2436" width="5" height="32" rx="2" fill="#087d70"/>
+<text x="1778" y="2459" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">SSE → 前端运行记录</text>
+<text x="1778" y="2495" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">执行中推送进度；完成后分块发答案。</text>
+<text x="1778" y="2526" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">不是模型 token 原样实时透传。</text>
+<text x="1778" y="2560" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">progress / result / chunk / trace / done</text>
+</g>
+<g id="next" data-node="true"><rect x="2315" y="2420" width="505" height="160" rx="8" fill="#eff7f5" stroke="#a7cec5" stroke-width="1.5"/>
+<rect x="2315" y="2436" width="5" height="32" rx="2" fill="#087d70"/>
+<text x="2338" y="2459" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">用户看报告，继续追问</text>
+<text x="2338" y="2495" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">同空间 + 同会话 → 新一轮 Run。</text>
+<text x="2338" y="2526" class="body" font-size="23" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#18252c">追问复用；新分析 / 刷新进入采集。</text>
+<text x="2338" y="2560" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">回到 01；不重新创建一个应用</text>
+</g>
+<path d="M570 2500 H625" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="625,2500 613,2495 613,2505" fill="#64748b"/>
+<path d="M1135 2500 H1190" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="1190,2500 1178,2495 1178,2505" fill="#64748b"/>
+<path d="M1700 2500 H1755" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="1755,2500 1743,2495 1743,2505" fill="#64748b"/>
+<path d="M2260 2500 H2315" fill="none" stroke="#64748b" stroke-width="2.6"/>
+<polygon points="2315,2500 2303,2495 2303,2505" fill="#64748b"/>
+<text x="60" y="2660" class="section" font-size="29" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">05  贯穿上述链路的共享支撑（不是执行完报告后才开始）</text>
+<g id="configuration" data-node="true"><rect x="60" y="2700" width="890" height="217" rx="8" fill="#f6f8fa" stroke="#cbd4d9" stroke-width="1.5"/>
+<rect x="60" y="2716" width="5" height="32" rx="2" fill="#526975"/>
+<text x="83" y="2739" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">执行语义与配置分离</text>
+<text x="83" y="2775" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">plugins：Skill / 工具注册、角色、Prompt 与策略。</text>
+<text x="83" y="2802" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">Runtime：循环、预算、权限判定和生命周期。</text>
+<text x="83" y="2829" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">ToolGateway / PermissionEngine：deny → ask → allow。</text>
+<text x="83" y="2856" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">数据源配置不随 Wiki 复制，按本轮计划筛选。</text>
+<text x="83" y="2886" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">plugins/ · config/sources.json · finance_sources.json</text>
+</g>
+<g id="storage" data-node="true"><rect x="990" y="2700" width="900" height="217" rx="8" fill="#f6f8fa" stroke="#cbd4d9" stroke-width="1.5"/>
+<rect x="990" y="2716" width="5" height="32" rx="2" fill="#526975"/>
+<text x="1013" y="2739" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">空间资料与后台采集</text>
+<text x="1013" y="2775" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">每个 company_id 分开：Wiki、会话、Memory、报告与运行证据。</text>
+<text x="1013" y="2802" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">Wiki 页面经 API 修改并索引；金融档案有版本与专用校验。</text>
+<text x="1013" y="2829" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">金融 Worker 默认每 60 分钟采集，进程停止就不再采集。</text>
+<text x="1013" y="2856" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">只存金融快照/任务状态，不自动调用模型或发送报告。</text>
+<text x="1013" y="2886" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">data/companies/{company_id}/ · scheduler.py</text>
+</g>
+<g id="observability" data-node="true"><rect x="1930" y="2700" width="890" height="217" rx="8" fill="#f6f8fa" stroke="#cbd4d9" stroke-width="1.5"/>
+<rect x="1930" y="2716" width="5" height="32" rx="2" fill="#526975"/>
+<text x="1953" y="2739" class="node-title" font-size="25" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700" fill="#18252c">Trace 与 Artifact 分工</text>
+<text x="1953" y="2775" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">Trace：谁调用谁、上下文清单、工具、Gate、模型及错误。</text>
+<text x="1953" y="2802" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">Artifact：来源快照、结构化分析、可阅读的 HTML 报告。</text>
+<text x="1953" y="2829" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">靠 run_id / task_id / span / artifact 引用关联复盘。</text>
+<text x="1953" y="2856" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">金融复核通过 ≠ 价格独立认证 ≠ 因果已经证实。</text>
+<text x="1953" y="2886" class="code" font-size="19" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">不展示模型隐式思维；记录的是执行证据与输出</text>
+</g>
+<text x="60" y="2968" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">阅读顺序：先看 01 的共同入口，再选普通对话或 /report 分支，沿 A / B 进入具体业务，最后在 C 汇合。</text>
+<text x="1840" y="2968" class="small" font-size="20" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="400" fill="#43545d">范围：当前 Workbench 用户路径；不展开旧兼容接口与全部测试函数。</text>
+</svg>

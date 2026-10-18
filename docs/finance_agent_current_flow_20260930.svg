@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1260" viewBox="0 0 1800 1260">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#334155"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .title { font: 700 32px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 17px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #475569; }
+      .box-title { font: 700 20px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #0f172a; }
+      .box-text { font: 400 16px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #334155; }
+      .small { font: 400 14px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #475569; }
+      .tiny { font: 400 13px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #475569; }
+      .lane { font: 700 18px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #1e293b; }
+      .arrow { stroke: #334155; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #64748b; stroke-width: 2.5; stroke-dasharray: 9 7; fill: none; marker-end: url(#arrow); }
+      .common { fill: #e0f2fe; stroke: #0284c7; stroke-width: 2; }
+      .runtime { fill: #ede9fe; stroke: #7c3aed; stroke-width: 2; }
+      .chat { fill: #ecfdf5; stroke: #059669; stroke-width: 2; }
+      .finance { fill: #fff7ed; stroke: #ea580c; stroke-width: 2; }
+      .evidence { fill: #fefce8; stroke: #ca8a04; stroke-width: 2; }
+      .subagent { fill: #fdf2f8; stroke: #db2777; stroke-width: 2; }
+      .trace { fill: #f1f5f9; stroke: #475569; stroke-width: 2; }
+      .note { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1260" fill="#f8fafc"/>
+  <text x="60" y="58" class="title">金融 Agent 当前流程设计图</text>
+  <text x="60" y="89" class="subtitle">统一 AgentRuntime 入口 + 金融确定性 Workflow + 按需受控 Subagent 复核</text>
+
+  <rect x="1390" y="35" width="350" height="62" rx="12" class="note"/>
+  <circle cx="1418" cy="58" r="8" fill="#0284c7"/><text x="1435" y="64" class="tiny">共享 Runtime / 通用组件</text>
+  <circle cx="1418" cy="81" r="8" fill="#ea580c"/><text x="1435" y="87" class="tiny">金融 Workflow / 数据证据</text>
+
+  <rect x="45" y="135" width="1710" height="235" rx="18" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="70" y="168" class="lane">一、所有请求共用的主 Agent Loop</text>
+
+  <rect x="75" y="205" width="225" height="110" rx="14" class="common" filter="url(#shadow)"/>
+  <text x="187" y="242" text-anchor="middle" class="box-title">用户 Query</text>
+  <text x="187" y="271" text-anchor="middle" class="box-text">普通问题 / /report</text>
+  <text x="187" y="297" text-anchor="middle" class="small">显式需求 + 隐含任务</text>
+
+  <path d="M300 260 H365" class="arrow"/>
+  <rect x="365" y="190" width="290" height="140" rx="14" class="runtime" filter="url(#shadow)"/>
+  <text x="510" y="226" text-anchor="middle" class="box-title">AgentRuntime</text>
+  <text x="510" y="253" text-anchor="middle" class="box-text">TurnCoordinator</text>
+  <text x="510" y="280" text-anchor="middle" class="small">准备 session / profile / memory</text>
+  <text x="510" y="305" text-anchor="middle" class="small">上下文边界、权限、预算、Trace</text>
+
+  <path d="M655 260 H720" class="arrow"/>
+  <rect x="720" y="190" width="300" height="140" rx="14" class="runtime" filter="url(#shadow)"/>
+  <text x="870" y="226" text-anchor="middle" class="box-title">主 AgentLoop</text>
+  <text x="870" y="253" text-anchor="middle" class="box-text">intent → skill selection</text>
+  <text x="870" y="280" text-anchor="middle" class="small">模型判断是否取数、分析、委派</text>
+  <text x="870" y="305" text-anchor="middle" class="small">Runtime 决定能否执行</text>
+
+  <path d="M1020 230 H1080" class="arrow"/>
+  <path d="M1020 280 H1080" class="arrow"/>
+  <text x="1040" y="221" class="tiny">普通聊天</text>
+  <text x="1040" y="273" class="tiny">/report 或金融问题</text>
+
+  <rect x="1080" y="185" width="610" height="145" rx="14" class="chat" filter="url(#shadow)"/>
+  <text x="1110" y="220" class="box-title">普通聊天路径 · general_chat</text>
+  <text x="1110" y="251" class="box-text">Wiki / Memory → ToolGateway → model_call → final_answer</text>
+  <text x="1110" y="281" class="small">复杂分析或用户明确要求时，才进入受控 Subagent 复核</text>
+  <text x="1110" y="307" class="small">普通问题：不启动 Subagent，直接返回主 Agent 结果</text>
+
+  <rect x="45" y="400" width="1710" height="480" rx="18" fill="#fffaf5" stroke="#fed7aa" stroke-width="2"/>
+  <text x="70" y="435" class="lane">二、金融 /report 路径：状态 → 数据 → 证据 → 校验 → 交付</text>
+
+  <rect x="75" y="480" width="235" height="130" rx="14" class="finance" filter="url(#shadow)"/>
+  <text x="192" y="516" text-anchor="middle" class="box-title">FinanceResearch</text>
+  <text x="192" y="542" text-anchor="middle" class="box-title">Gateway</text>
+  <text x="192" y="573" text-anchor="middle" class="small">读取金融 Wiki / 用户档案</text>
+  <text x="192" y="596" text-anchor="middle" class="small">编译时间窗、资产和口径</text>
+
+  <path d="M310 545 H350" class="arrow"/>
+  <rect x="350" y="480" width="235" height="130" rx="14" class="finance" filter="url(#shadow)"/>
+  <text x="467" y="516" text-anchor="middle" class="box-title">Workflow State</text>
+  <text x="467" y="548" text-anchor="middle" class="box-text">collect → normalize</text>
+  <text x="467" y="578" text-anchor="middle" class="box-text">dedup → analyze</text>
+  <text x="467" y="600" text-anchor="middle" class="small">阶段失败可阻断发布</text>
+
+  <path d="M585 545 H625" class="arrow"/>
+  <rect x="625" y="480" width="235" height="130" rx="14" class="evidence" filter="url(#shadow)"/>
+  <text x="742" y="516" text-anchor="middle" class="box-title">EvidenceLedger</text>
+  <text x="742" y="548" text-anchor="middle" class="box-text">EvidenceFragment</text>
+  <text x="742" y="578" text-anchor="middle" class="small">source / hash / date / range</text>
+  <text x="742" y="600" text-anchor="middle" class="small">生成稳定 evidence_id</text>
+
+  <path d="M860 545 H900" class="arrow"/>
+  <rect x="900" y="480" width="235" height="130" rx="14" class="finance" filter="url(#shadow)"/>
+  <text x="1017" y="516" text-anchor="middle" class="box-title">Analysis</text>
+  <text x="1017" y="548" text-anchor="middle" class="box-text">事实 / 解释 / 缺口</text>
+  <text x="1017" y="578" text-anchor="middle" class="small">不把共现直接写成因果</text>
+  <text x="1017" y="600" text-anchor="middle" class="small">保留原始数据和来源</text>
+
+  <path d="M1135 545 H1175" class="arrow"/>
+  <rect x="1175" y="480" width="235" height="130" rx="14" class="evidence" filter="url(#shadow)"/>
+  <text x="1292" y="516" text-anchor="middle" class="box-title">Gate / Audit</text>
+  <text x="1292" y="548" text-anchor="middle" class="box-text">覆盖、日期、单位、来源</text>
+  <text x="1292" y="578" text-anchor="middle" class="small">证据不足 → 降级或阻断</text>
+  <text x="1292" y="600" text-anchor="middle" class="small">允许已验证结果进入交付</text>
+
+  <path d="M1410 545 H1450" class="arrow"/>
+  <rect x="1450" y="480" width="235" height="130" rx="14" class="finance" filter="url(#shadow)"/>
+  <text x="1567" y="516" text-anchor="middle" class="box-title">Artifact + Answer</text>
+  <text x="1567" y="548" text-anchor="middle" class="box-text">JSON / Markdown / HTML</text>
+  <text x="1567" y="578" text-anchor="middle" class="small">report_read 支持后续追问</text>
+  <text x="1567" y="600" text-anchor="middle" class="small">final_answer 只引用已登记证据</text>
+
+  <rect x="75" y="670" width="1610" height="155" rx="14" class="subagent"/>
+  <text x="105" y="708" class="box-title">可选受控 Subagent 复核（不是每次 /report 的必经步骤）</text>
+  <text x="105" y="740" class="box-text">触发：analysis_needed / skeptic_needed / explicit_verifier</text>
+  <text x="105" y="770" class="small">Runtime → subagent_context（只放授权 artifact / evidence_id）</text>
+  <text x="105" y="796" class="small">→ SubagentRunner（analyst / skeptic / verifier / collector）→ review_result → 主 Agent 最终整合</text>
+  <path d="M1017 610 C1017 650 900 670 750 670" class="dash"/>
+  <path d="M1410 610 C1410 650 1350 670 1240 670" class="dash"/>
+  <text x="1025" y="647" class="tiny">需要独立复核时进入</text>
+
+  <rect x="45" y="920" width="1710" height="145" rx="18" class="trace"/>
+  <text x="70" y="956" class="lane">三、Trace：所有路径统一记录</text>
+  <text x="70" y="990" class="box-text">AgentRun / AgentStep：intent → skill → context → tool/model → workflow/subagent → gate → artifact → final</text>
+  <text x="70" y="1020" class="small">关键字段：run_id、step_type、input/output 摘要、tool_calls、evidence_ids、review_result、stop_reason</text>
+  <text x="70" y="1048" class="small">因此可以区分：委派错误、上下文错误、权限错误、证据不足、子智能体输出错误、主 Agent 整合错误</text>
+
+  <rect x="45" y="1100" width="1710" height="115" rx="18" class="note"/>
+  <text x="70" y="1134" class="lane">2026-09-30 真实验收结果</text>
+  <text x="70" y="1163" class="tiny">Day4：普通问题 0 委派；分析+质疑：analyst、skeptic；来源核验：collector、verifier；四例均通过。</text>
+  <text x="70" y="1188" class="tiny">金融：首次因缺少 exchange_calendars 被质量门阻断；补齐依赖后报告成功，缺失黄金/白银/美股时明确降级，未编造数据。</text>
+</svg>

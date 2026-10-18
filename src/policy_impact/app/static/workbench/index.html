@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Finance Agent Next</title>
+    <link rel="stylesheet" href="/static/workbench/styles.css?v=20260929-article-library" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <aside id="sidebar" class="sidebar">
+        <div class="brand-row">
+          <div class="brand">
+            <div class="brand-mark">A</div>
+            <div class="brand-copy">
+              <div class="brand-title">Finance Agent Next</div>
+              <div class="brand-subtitle">金融研究</div>
+            </div>
+          </div>
+          <button id="sidebar-toggle" class="sidebar-toggle" type="button" title="收起侧边栏" aria-label="收起侧边栏">‹</button>
+        </div>
+
+        <section class="workspace-switcher" aria-label="工作空间">
+          <div class="section-row">
+            <div class="section-label">工作空间</div>
+            <button id="toggle-test-sessions" class="session-filter" type="button" aria-pressed="false">显示测试</button>
+          </div>
+          <div class="workspace-selector-row">
+            <select id="company-select" class="field-select" aria-label="选择工作空间"></select>
+            <button id="create-workspace" class="workspace-create-button hidden" type="button" hidden><span aria-hidden="true">+</span></button>
+          </div>
+          <div id="company-card" class="company-card"></div>
+        </section>
+
+        <button id="new-session" class="new-chat" type="button"><span aria-hidden="true">+</span> 新建对话</button>
+
+        <div class="sidebar-section sessions-section">
+          <div class="section-row">
+            <div class="section-label">聊天记录</div>
+          </div>
+          <input id="session-search" class="search-input" placeholder="搜索会话" aria-label="搜索聊天记录" />
+          <div id="session-list" class="session-list"></div>
+        </div>
+
+        <div id="command-list" class="hidden" hidden></div>
+        <div id="tool-list" class="hidden" hidden></div>
+        <span id="active-skill-chip" class="hidden">默认对话</span>
+      </aside>
+
+      <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" aria-label="关闭侧边栏"></button>
+
+      <main class="workspace">
+        <header class="topbar">
+          <button id="mobile-sidebar-toggle" class="mobile-menu-button" type="button" title="打开侧边栏" aria-label="打开侧边栏">☰</button>
+          <div class="topbar-copy">
+            <div id="session-title" class="page-title">金融研究</div>
+            <div id="session-meta" class="page-subtitle"></div>
+          </div>
+          <nav class="view-switch" aria-label="工作台页面">
+            <button class="view-tab active" type="button" data-view="chat" aria-pressed="true">对话</button>
+            <button class="view-tab" type="button" data-view="wiki" aria-pressed="false">Wiki</button>
+            <button id="article-tab" class="view-tab hidden" type="button" data-view="articles" aria-pressed="false">文章</button>
+          </nav>
+        </header>
+
+        <section id="chat-stream" class="chat-stream" role="log" aria-live="polite" aria-label="对话消息"></section>
+        <section id="wiki-view" class="wiki-view hidden" aria-label="工作空间 Wiki"></section>
+        <section id="article-view" class="article-view hidden" aria-label="文章资料库"></section>
+
+        <footer id="composer" class="composer">
+          <div id="slash-palette" class="slash-palette hidden" role="listbox" aria-label="报告命令"></div>
+          <div class="composer-inner">
+            <div class="composer-box">
+              <div class="prompt-wrap">
+                <div id="prompt-input" class="prompt-editor" contenteditable="true" data-placeholder="输入金融研究问题" aria-label="消息输入" role="combobox" aria-autocomplete="list" aria-controls="slash-palette" aria-expanded="false" aria-multiline="true" spellcheck="false"></div>
+              </div>
+              <div class="composer-toolbar">
+                <div class="composer-tools">
+                  <button id="focus-slash-command" class="composer-tool-button hidden" type="button" title="技能命令" aria-label="技能命令" hidden>/</button>
+                  <span id="composer-skill-chip" class="composer-skill-chip">默认对话</span>
+                </div>
+                <div class="composer-actions">
+                  <label class="model-picker-wrap" title="本轮使用模型">
+                    <span class="status-dot" aria-hidden="true"></span>
+                    <select id="model-picker" class="model-picker" aria-label="选择模型"></select>
+                  </label>
+                  <div id="runtime-status" class="runtime-status"></div>
+                  <button id="send-message" class="send-button" type="button" title="发送" aria-label="发送">↑</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </footer>
+      </main>
+    </div>
+
+    <dialog id="workspace-dialog" class="modal wiki-dialog" aria-labelledby="workspace-dialog-title">
+      <form id="workspace-create-form" class="wiki-dialog-form">
+        <div class="modal-head">
+          <h2 id="workspace-dialog-title" class="modal-title">新建工作空间</h2>
+          <button class="wiki-close-button" type="button" data-close-dialog="workspace-dialog" aria-label="关闭">×</button>
+        </div>
+        <fieldset id="workspace-identity-fields" class="wiki-form-fields">
+          <label>空间名称<input id="workspace-name" name="name" required maxlength="200" autocomplete="off" /></label>
+          <label>画像类型<select id="workspace-profile-type" name="profile_type"><option value="company">公司画像</option><option value="personal">个人画像</option></select></label>
+          <label>空间标识<input id="workspace-id" name="company_id" required maxlength="64" pattern="[A-Za-z0-9]([A-Za-z0-9_]|-){0,63}" autocomplete="off" spellcheck="false" /></label>
+        </fieldset>
+        <label class="wiki-field-block">背景（选填）<textarea id="workspace-background" name="background" rows="3"></textarea></label>
+        <label class="wiki-field-block">目标（选填）<textarea id="workspace-goals" name="goals" rows="3"></textarea></label>
+        <label class="wiki-field-block">约束（选填）<textarea id="workspace-constraints" name="constraints" rows="3"></textarea></label>
+        <p id="workspace-create-status" class="wiki-form-status" role="status" aria-live="polite"></p>
+        <p id="workspace-create-error" class="wiki-form-error hidden" role="alert"></p>
+        <div class="wiki-dialog-actions">
+          <button class="wiki-secondary-button" type="button" data-close-dialog="workspace-dialog">取消</button>
+          <button id="workspace-create-submit" class="wiki-primary-button" type="submit">创建空间</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="article-dialog" class="modal wiki-dialog" aria-labelledby="article-dialog-title">
+      <form id="article-create-form" class="wiki-dialog-form">
+        <div class="modal-head">
+          <h2 id="article-dialog-title" class="modal-title">添加文章</h2>
+          <button class="wiki-close-button" type="button" data-close-dialog="article-dialog" aria-label="关闭">×</button>
+        </div>
+        <label>博主文件夹<input id="article-author" name="author" list="article-author-options" required maxlength="60" autocomplete="off" /></label>
+        <datalist id="article-author-options"></datalist>
+        <label>文章标题<input id="article-title" name="title" required maxlength="200" /></label>
+        <div class="article-form-row">
+          <label>发布日期<input id="article-date" name="published_at" type="date" required /></label>
+          <label>原文链接（选填）<input id="article-source-url" name="source_url" type="url" placeholder="https://" /></label>
+        </div>
+        <label>导入 Markdown / 文本文件<input id="article-file" type="file" accept=".md,.txt,text/markdown,text/plain" /></label>
+        <label>文章正文<textarea id="article-content" name="content" rows="11" required minlength="20" maxlength="200000"></textarea></label>
+        <p id="article-create-error" class="wiki-form-error hidden" role="alert"></p>
+        <div class="wiki-dialog-actions">
+          <button class="wiki-secondary-button" type="button" data-close-dialog="article-dialog">取消</button>
+          <button id="article-create-submit" class="wiki-primary-button" type="submit">添加文章</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="wiki-page-dialog" class="modal wiki-dialog" aria-labelledby="wiki-page-dialog-title">
+      <form id="wiki-page-create-form" class="wiki-dialog-form">
+        <div class="modal-head">
+          <h2 id="wiki-page-dialog-title" class="modal-title">新建 Wiki 页面</h2>
+          <button class="wiki-close-button" type="button" data-close-dialog="wiki-page-dialog" aria-label="关闭">×</button>
+        </div>
+        <p id="wiki-page-workspace" class="wiki-form-status"></p>
+        <label class="wiki-field-block">页面名称<input id="wiki-page-title" name="title" required maxlength="80" autocomplete="off" /></label>
+        <label class="wiki-field-block">页面说明（选填）<textarea id="wiki-page-description" name="description" rows="3"></textarea></label>
+        <div class="wiki-editor-head">
+          <span class="wiki-section-title">结构化事实</span>
+          <button id="wiki-page-add-fact" class="wiki-secondary-button" type="button"><span aria-hidden="true">+</span> 添加事实</button>
+        </div>
+        <div id="wiki-page-facts" class="wiki-fact-form-list"><p class="wiki-no-facts">暂无事实</p></div>
+        <p id="wiki-page-create-error" class="wiki-form-error hidden" role="alert"></p>
+        <div class="wiki-dialog-actions">
+          <button class="wiki-secondary-button" type="button" data-close-dialog="wiki-page-dialog">取消</button>
+          <button id="wiki-page-create-submit" class="wiki-primary-button" type="submit">创建页面</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+    <script src="/static/workbench/app.js?v=20260929-article-library"></script>
+  </body>
+</html>

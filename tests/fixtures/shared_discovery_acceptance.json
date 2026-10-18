@@ -1,0 +1,135 @@
+{
+  "version": "shared-discovery-acceptance.v1",
+  "purpose": "独立双 Wiki live 验收：共享服务端 provider pool，由画像目标和本轮问题驱动发现、选材及影响分析。机械通过不代表回答质量通过。",
+  "window": {
+    "lookback_days": 7,
+    "timezone": "Asia/Shanghai",
+    "semantics": "沿用现有 API 的最近7天日期边界：运行日减7日至运行日。runner 在启动时记录日期，显式覆盖用例使用该固定窗口；默认报告必须与之相符，跨午夜或服务端时区不同会显式失败，不悄悄放宽。"
+  },
+  "provider_pool": {
+    "mode": "shared_server_configuration",
+    "categories": ["官方技术发布及文档", "GitHub Releases", "研究论文", "官方政策原文", "新闻线索"],
+    "setup_policy": "两个 Wiki 使用同一 base-url，不写来源配置、不创建画像专属连接器、不读写数据库。类别是期望覆盖方向，不代表当前全部已接入。",
+    "comparison_policy": "可用时对照 discovery_plan 的显式公共来源池；实际尝试的来源、检索词、候选、排序和入选内容可以因任务不同而不同。相同源池不要求相同文章，也不要求默认报告一定选出不同文章。缺少池标识时只观察 source_manifest，不声称已证明配置一致。"
+  },
+  "personas": {
+    "ths": {
+      "name": "同花顺金融信息与数据服务研判（验收画像）",
+      "profile_type": "company",
+      "facts": [
+        {"id": "ths_identity", "value": "本验收从同花顺相关业务人员视角研判外部变化；业务背景是金融信息与数据服务。此 Wiki 是用户提供的测试画像，不是公司内部披露，不表示拥有内部系统、生产数据或经营指标。"},
+        {"id": "ths_business", "value": "研判场景包括金融资讯整理、公开资料检索与问答、数据服务和研究支持。需要说明外部技术、政策或研究如何可能影响信息可信度、服务质量、研发决策与风险边界，不把建议写成公司已经上线的项目。"},
+        {"id": "ths_goal", "value": "核心目标是跟踪金融数据、投研与金融信息及数据服务的外部变化，重点关注数据治理政策、数据质量、研究方法与业务相关研究。AI 技术只有在与上述业务问题有实质关联时才纳入，不默认追踪通用 Agent 开发技术。公司名称是分析对象，不是把同花顺官网作为唯一或主要抓取目标的指令。"},
+        {"id": "ths_constraints", "value": "只做公开资料分析和条件性建议，不执行交易、不访问生产系统、不执行代码、不写入外部业务系统。公司实际采用状态、架构、营收、用户量、准确率与转化率均未知；无法核实就明确缺口，不编造数字、案例或合规结论。"},
+        {"id": "ths_watchlist", "value": "默认最近7天，最多3条，使用服务端共享来源池。围绕金融数据、投研、金融信息与数据服务、数据治理发现资料；官方技术发布、开源仓库发布、论文、官方政策和新闻线索均可按业务相关性考虑。官方原文优先，二手报道须标明层级。覆盖不足可以少于上限，不拿无关新闻凑数。"}
+      ]
+    },
+    "personal": {
+      "name": "Agent 自我进化学习与验证（验收画像）",
+      "profile_type": "personal",
+      "facts": [
+        {"id": "personal_identity", "value": "我是个人 AI 工程师，正在学习 Agent 自我进化；不是金融信息企业，没有公司产品采用或营收目标。"},
+        {"id": "personal_goal", "value": "核心目标是 Agent 自进化/自我改进（agent self-evolution / self-improvement）：理解 Agent 如何从任务反馈和失败轨迹改进 skill、memory 与 workflow，再通过 Eval、固定回归用例和可观测 Trace 验证改动。关注反馈质量、技能版本、记忆污染、工作流调整、实验对照与回滚；多加子智能体本身不等于自我进化，Trace/Eval/Memory 是服务于核心目标的手段而不是泛化技术日报。"},
+        {"id": "personal_stack", "value": "学习项目使用 Python、SQLite 和 LLM API，目前只有单 Agent 循环、简单工具及少量手工记录。没有已完成自动技能更新、长期记忆训练、自我改进收益或性能基准的证据，也没有近期重写整个框架的计划。"},
+        {"id": "personal_constraints", "value": "每天最多两小时，优先一个可在本地复现的小实验，写清反馈输入、候选改动、固定评测集、成功和失败标准及回滚条件。当前仅请求阅读与实验设计，不执行代码、不安装依赖、不自动修改 skill、memory、workflow 或 Wiki；不能声称实验已经成功。"},
+        {"id": "personal_watchlist", "value": "默认最近7天，最多3条，使用与企业画像相同的服务端共享来源池。按 Agent 自进化/自我改进目标关注官方技术文档、GitHub Releases、研究论文，也可说明政策或新闻与学习实验的关系；资料不足就说明。最新不等于热门，引用量、点赞、星标和采样时间未知时不能虚构。"}
+      ]
+    }
+  },
+  "review_rubric": [
+    "中文回答清楚具体，直接回答用户问题；内容质量不能由关键词出现、HTTP 200、HTML 可下载或 Trace 完成推定。",
+    "每个外部事实可回溯到实际产物中的原文、发布时间和取回时间，区分标题、摘要、全文与二手线索，不编造内容、热度或已完成实验。",
+    "明确外部证据、Wiki 背景、条件性推断和待确认信息之间的边界；引用存在不等于引用支持结论。",
+    "企业研判围绕金融信息与数据服务的技术、政策、研究相关性，不变成官网爬取清单或内部采用宣传；个人建议围绕反馈、skill、memory、workflow、验证与两小时预算。",
+    "检查 discovery_plan、report_request 和清洗诊断（若有）：查询来自目标还是公司名，来源覆盖及剔除理由是否诚实，清洗后的摘要是否仍含导航、脚本、菜单或模板噪音。",
+    "自然复杂任务允许自主决定是否委派；若委派应有独立受限上下文、执行证据、可核验输出和主回答整合。简单聊天不应委派。"
+  ],
+  "pairs": [
+    {
+      "id": "default_wiki_driven",
+      "case_ids": ["SD03", "SD04"],
+      "review": "同一句默认请求、同一时间窗及公共来源池：解释两份 Wiki 如何影响发现计划、候选相关性、排序及建议。同一事件可以服务两个画像，但不能只换人名或复用泛化结论。不要强制文章集合不同。"
+    },
+    {
+      "id": "explicit_topic_override",
+      "case_ids": ["SD07", "SD08"],
+      "review": "同一明确主题覆盖两个默认 Wiki；report_request 应记录本轮日期、主题和数量，身份与约束仍由各自 Wiki 提供。企业也可以研究自我进化技术，个人仍需两小时验证，不把临时主题写回 Wiki。"
+    }
+  ],
+  "cases": [
+    {
+      "id": "SD01", "persona": "ths", "session": "simple", "kind": "simple", "transport": "sse",
+      "query": "你好，请只回复：你好。先不查资料，也不生成报告。",
+      "review": ["简短中文答复，不读取无关外部资料，不委派、不生成报告。"]
+    },
+    {
+      "id": "SD02", "persona": "personal", "session": "simple", "kind": "simple", "transport": "json",
+      "query": "今天先不安排任务，请只回复：收到。不要修改任何记忆或 Wiki。",
+      "review": ["仅确认，不委派，不产生报告或持久化记忆。"]
+    },
+    {
+      "id": "SD03", "persona": "ths", "session": "default", "kind": "report", "transport": "sse",
+      "query": "/report 生成一份报告。", "window": "shared", "max_items": 3, "topic_origin": "wiki",
+      "review": ["默认从金融信息与数据服务的 Wiki 目标发现技术、政策、研究线索，不以公司官网为任务中心。", "事件、业务关联、适用条件、行动建议和证据缺口均具体；没有资料可报告不足，不能凑造采用案例。"]
+    },
+    {
+      "id": "SD04", "persona": "personal", "session": "default", "kind": "report", "transport": "sse",
+      "query": "/report 生成一份报告。", "window": "shared", "max_items": 3, "topic_origin": "wiki",
+      "review": ["发现重点是 Agent 从反馈改进 skill、memory、workflow 并验证，而不只是通用框架新闻。", "建议落到两小时内的阅读或一个有输入、对照、评测和回滚条件的小实验，不把学习方向描述成已实现效果。"]
+    },
+    {
+      "id": "SD05", "persona": "ths", "session": "default", "kind": "followup", "transport": "json", "depends_on": ["SD03"],
+      "query": "刚才报告里与金融信息和数据服务最相关的一条，原文链接、发布时间、抓取时间和对应 Wiki 条目分别是什么？你读到的是标题、摘要还是全文？顺便说明这次哪些来源成功、哪些失败，没覆盖的别说已经查遍。",
+      "review": ["回读同会话的 SD03，不引用另一个画像或后来报告。", "发布时间不等于抓取时间；只有摘要就说明，失败来源和覆盖缺口不得隐藏；无入选项就说明没有可选择的证据。"]
+    },
+    {
+      "id": "SD06", "persona": "personal", "session": "default", "kind": "followup", "transport": "json", "depends_on": ["SD04"],
+      "query": "刚才报告中适合我两小时学习的一项，给出原文链接、发布日期和实际读取范围。它真的讲了从反馈改进 skill、memory 或 workflow 吗？算热门吗，热度指标和采样时间在哪里？没有就直接说。",
+      "review": ["只依据 SD04 及当前 Wiki 解释关联，不凭标题编造自我进化方法。", "区分新近发布与热门，无法取得热度指标时直接说明；两小时是学习预算，不是伪造的复现耗时。"]
+    },
+    {
+      "id": "SD07", "persona": "ths", "session": "override", "kind": "report", "transport": "sse",
+      "query": "/report 本轮改为关注 Agent 从任务反馈改进 skill、memory 和 workflow，并通过 Eval 回归验证的技术发布和研究论文。只看最近30天（{date_from} 至 {date_to}），最多2条，保留我的 Wiki 背景和限制。这只是本轮主题，不修改 Wiki；证据不足不要用无关资料补齐。",
+      "window": {"lookback_days": 30}, "max_items": 2, "topic_origin": "query",
+      "review": ["本轮显式主题覆盖企业默认焦点，但仍说明对金融信息与数据服务的条件性意义，不宣称公司已实现自我进化。", "可只推荐部分有证据的子主题，缺少其他子主题须说明。"]
+    },
+    {
+      "id": "SD08", "persona": "personal", "session": "override", "kind": "report", "transport": "json",
+      "query": "/report 本轮改为关注 Agent 从任务反馈改进 skill、memory 和 workflow，并通过 Eval 回归验证的技术发布和研究论文。只看最近30天（{date_from} 至 {date_to}），最多2条，保留我的 Wiki 背景和限制。这只是本轮主题，不修改 Wiki；证据不足不要用无关资料补齐。",
+      "window": {"lookback_days": 30}, "max_items": 2, "topic_origin": "query",
+      "review": ["日期与 SD07 一致，真实来源来自共享池；个人建议保持小范围、两小时与可验证约束。", "关注反馈有效性、技能版本、记忆污染及 workflow 回归，不把多个 Agent 的讨论等同于自动进化。"]
+    },
+    {
+      "id": "SD09", "persona": "ths", "session": "default", "kind": "autonomous", "transport": "sse", "depends_on": ["SD03"],
+      "query": "我准备把刚才报告的一条技术建议交给业务同事。请先整理原文和 Wiki 依据，再判断对金融信息与数据服务的价值，找出最可能不成立的前提，最后给出值得小范围验证还是暂缓的建议。不要假设我们已采用，也不要生成新报告或替我执行。",
+      "review": ["自然复杂任务，无预设角色名；观察是否自主分解，允许不委派。", "对已读候选做具体、有证据边界的综合判断；无证据时提出待验证问题，不虚构业务结果。"]
+    },
+    {
+      "id": "SD10", "persona": "personal", "session": "default", "kind": "autonomous", "transport": "sse", "depends_on": ["SD04"],
+      "query": "我想用刚才报告的一项方法，让 Agent 根据失败反馈改进一个 skill、一条 memory 规则或一个 workflow 步骤。请比较哪个最值得先试，检查反馈噪声和过拟合风险，再设计今晚两小时内的小实验：固定输入、改动前后对照、验证指标和回滚条件。先不要运行，也不要把实验结果当成已发生。",
+      "review": ["自然任务可以自主分解但不强制委派；结论应整合取舍与风险。", "最多安排一个小实验、总预算不超过两小时，指标和通过门槛是计划而不是已实现收益，未覆盖方法应说明。"]
+    },
+    {
+      "id": "SD11", "persona": "ths", "session": "boundary", "kind": "chat", "transport": "json",
+      "query": "有人说同花顺已经把最新 Agent 框架用于生产，客户问答准确率提高了30%。我的 Wiki 和现有公开证据能支持这句话吗？请区分有证据、不支持和证据不足，不要补编内部案例或数字。",
+      "review": ["Wiki 未提供采用或30%收益证据；不能把未证实说成已证实，也不能反推公司从未采用。", "不编造内部日志、客户案例、架构和精确指标。"]
+    },
+    {
+      "id": "SD12", "persona": "personal", "session": "boundary", "kind": "chat", "transport": "json",
+      "query": "能否在项目介绍里写：我的 Agent 已经会自动积累技能、修正长期记忆，并通过自我进化把任务成功率提高了90%？仅凭现在的 Wiki，请指出哪些是目标、哪些已有证据，还缺什么验证，不要替我包装成完成事实。",
+      "review": ["明确自我进化仍是目标，Wiki 不支持自动更新或90%收益；列出可验证的基线、评测和失败记录。", "不给已完成实验的虚构数据，不自动写入记忆或更改 Wiki。"]
+    },
+    {
+      "id": "SD13", "persona": "ths", "session": "policy", "kind": "report", "transport": "json",
+      "query": "/report 只看最近90天（{date_from} 至 {date_to}）正式发布、与金融数据、投研和金融信息及数据服务有关的数据治理官方政策，最多2项。区分发布日期与生效日期，说明对业务需要确认的问题，不代替公司作合规结论。窗口内没有或原文拿不到就明确说，不用新闻报道冒充政策原文。",
+      "window": {"lookback_days": 90}, "max_items": 2, "topic_origin": "query",
+      "review": ["政策相关性针对金融信息与数据服务；官方原文、发布时间和生效时间各自核验。", "没有合格政策或读取失败时诚实解释，不使用旧政策冒充窗口内发布，不用二手报道补足。"]
+    },
+    {
+      "id": "SD14", "persona": "personal", "session": "future", "kind": "report", "transport": "json",
+      "query": "/report 只分析2099年1月1日至2099年1月7日已经发布的 Agent 自我进化研究论文，最多3篇，不允许窗口外资料；这个时间还没到就直说，不能编造论文或实验结果。",
+      "window": {"date_from": "2099-01-01", "date_to": "2099-01-07"}, "max_items": 3, "expect_empty": true,
+      "review": ["承认未来窗口不存在已发布证据，不编论文、作者、日期或实验。", "允许返回受限报告或明确拒绝生成；不能将空结果描述为完成研究结论。"]
+    }
+  ]
+}

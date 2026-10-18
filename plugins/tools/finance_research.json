@@ -1,0 +1,127 @@
+[
+  {
+    "name": "skill.open",
+    "description": "按目录 ID 读取一项能力的完整说明和相关工具目录；详细参数单独查看，不读取金融资料。",
+    "parameters": {"skill_id": "主 Prompt 能力目录中的 ID，不接受路径"}
+  },
+  {
+    "name": "tool.describe",
+    "description": "按名称查看一个本轮可用工具的完整参数契约，不执行该工具也不增加权限。",
+    "parameters": {"name": "本轮工具目录中的完整名称"}
+  },
+  {
+    "name": "article.list",
+    "description": "按作者文件夹和日期浏览本地文章元数据，不读取正文。",
+    "parameters": {"author": "可选作者文件夹", "published_after": "可选 YYYY-MM-DD", "published_before": "可选 YYYY-MM-DD", "limit": "1-500"}
+  },
+  {
+    "name": "article.read",
+    "description": "读取 article.list 返回的一篇文章的限定行，读取后才能归因作者观点。",
+    "parameters": {"article_id": "article.list 返回的 ID", "start_line": "起始行，默认 1", "limit": "最多 100 行"}
+  },
+  {
+    "name": "article.claims",
+    "description": "按需提炼并保存带来源定位的文章观点；输出是作者观点，不是已验证事实。",
+    "parameters": {"article_id": "article.list 返回的 ID"}
+  },
+  {
+    "name": "article.study",
+    "description": "Optionally study one selected article with a separate model call. Deep reads its full text in bounded sections; skim reads only chosen lines. Returns source-bound claims and a saved card ID, not verified market facts.",
+    "parameters": {"article_id": "ID from article.list", "question": "Question to apply to this article", "depth": "skim | deep", "start_line": "Required for skim: first source line", "limit": "Required for skim: 1-100 source lines"}
+  },
+  {
+    "name": "source.discover",
+    "description": "发现免费公开网页线索；标题和摘要只是线索，不能代替正文证据。",
+    "parameters": {"query": "外部核查查询"}
+  },
+  {
+    "name": "source.fetch",
+    "description": "读取允许的公开官方 HTML/文本正文；不支持 PDF，需寻找可访问版或披露缺口。读取本身不等于结论已被核实。",
+    "parameters": {"url": "公开官方 URL"}
+  },
+  {
+    "name": "web.search",
+    "description": "搜索免费公开网页，返回发现线索，不写入证据账本。",
+    "parameters": {"query": "搜索词", "limit": "1-10", "timelimit": "可选 d/w/m/y"}
+  },
+  {
+    "name": "web.open",
+    "description": "读取公开 HTML/文本网页的限定正文和元数据，并形成网页证据；长网页返回 next_start_line，可再次调用读取后续行；PDF 不支持。",
+    "parameters": {"url": "搜索结果或用户提供的公开 HTTP(S) URL", "start_line": "可选，起始正文行号，默认 1；长网页用上次的 next_start_line 继续"}
+  },
+  {
+    "name": "market.catalog",
+    "description": "列出支持的行情品种、单位和口径。",
+    "parameters": {}
+  },
+  {
+    "name": "market.snapshot",
+    "description": "获取指定品种和时间范围的公开日线数据，不负责分析。核查历史日期时显式传 start/end 和 latest_completed=false；省略日期只取得最近完成交易日。",
+    "parameters": {"symbols": "market.catalog 中的品种列表", "start": "可选 YYYY-MM-DD", "end": "可选 YYYY-MM-DD", "latest_completed": "是否取最近完成交易日"}
+  },
+  {
+    "name": "market.metrics",
+    "description": "对已获取的行情快照计算确定性变化指标。",
+    "parameters": {"snapshot_id": "market.snapshot 返回的 ID"}
+  },
+  {
+    "name": "market.series",
+    "description": "展开已获取快照中的单一品种日线。",
+    "parameters": {"snapshot_id": "快照 ID", "symbol": "品种代码", "offset": "起始位置", "limit": "1-100"}
+  },
+  {
+    "name": "research.plan",
+      "description": "每轮取材前创建简洁但完整的研究计划，之后可查看或更新目标与结构化范围；简单问题也需规划，但不预设取材、分析或委派方式。scope 只记录用户范围，不规定后续工作流。",
+      "parameters": {"operation": "create | update | get | load", "goals": "create 时必须是 2-8 项字符串数组，例如 [\"定位问题\", \"完成证据核对\"]", "scope": "可选对象；authors 必须是作者名数组，date_range 必须是对象。示例：{\"authors\":[\"TT\",\"培风客\"],\"date_range\":{\"start\":\"2026-10-01\",\"end\":\"2026-10-31\"},\"topics\":[\"黄金\"],\"deliverable\":\"回答用户问题并披露缺口\"}", "goal_id": "update 时的整数目标编号", "status": "update 时为 pending | done | blocked", "note": "进度或阻塞说明", "run_id": "load 时同一会话内的来源运行 ID"}
+  },
+  {
+    "name": "research.artifact",
+    "description": "Save/list/reload immutable current-run research by generated ID, never paths. Omitted version retains legacy cards. Explicit v2 stores coherent understanding/synthesis/working views with Runtime-bound source and input scope; a stored result is not verified or published. get returns the full validated record; v2 list is paginated and stale cursors must be restarted.",
+    "parameters": {"operation": "save | get | list", "schema_version": "Optional finance.research_artifact.v1 (legacy default) | finance.research_artifact.v2 (explicit research save/list)", "kind": "v1: article_card | comparison | review | research_note; v2: article_understanding | synthesis | working_view", "research_task": "Required for v2 save: finance.research_task.v1 with original_query, objective, material_refs, requested_result_kind, completion_expectation, optional reading_request/focus/user_requirements; details in versioned_research skill", "payload": "v2 save: finance.research_result.v1 {schema_version, content, evidence_links, material_disposition, gaps, limitations, optional supporting_artifact_refs/candidate_answer}; legacy payload unchanged", "artifact_id": "get: a generated current-run v1/v2 ID", "cursor": "v2 list only: opaque next_cursor; omit for first page"}
+  },
+  {
+    "name": "research.disposition",
+    "description": "Record the main Agent's decision on a returned research result before delivery. This is not a verification certificate and does not force use of every read source.",
+    "parameters": {"result_ref": "artifact_id or result_checksum in a current-run validated ingestion receipt", "decision": "use | qualify | exclude | follow_up", "reason": "Nonblank reason addressing the current question"}
+  },
+  {
+    "name": "research.synthesize",
+    "description": "Optionally compare 2-20 independently studied article cards around one question. A separate model pass proposes agreement, disagreement, evolution or complementary views, with claim IDs validated against distinct sources. Returns a saved comparison ID or an explicit no-relation result.",
+    "parameters": {"question": "Exact comparison question", "card_ids": "2-20 card_* IDs from article.study or research.artifact"}
+  },
+  {
+    "name": "research.verify",
+    "description": "Optional typed model review of selected article-card claims against already observed evidence. Distinguishes faithful author attribution, fact support/refutation, future forecasts, causal hypotheses and model inference; returns a review ID, revision suggestions and precise missing-evidence queries. It does not itself browse or certify independent source acquisition.",
+    "parameters": {"card_ids": "1-20 saved card_* IDs", "claim_ids": "Optional 1-30 claim_* IDs from those cards", "evidence_ids": "Optional canonical IDs of public/market evidence read this turn", "as_of": "Optional YYYY-MM-DD research date"}
+  },
+  {
+    "name": "research.checkpoint",
+    "description": "Record the main Agent's verification decision after analysis. This records checks, observed EvidenceRefs and gaps; it does not verify claims by itself or require any particular research tool.",
+    "parameters": {"checks": "1-20 objects: claim, decision (check|not_needed), outcome (supported|refuted|inconclusive|not_applicable|not_due), method, evidence_refs, reason, gap; not_due is for forecasts whose horizon has not ended", "summary": "Optional overall verification judgment"}
+  },
+  {
+    "name": "research.coverage",
+    "description": "Record why article evidence is sufficient to synthesize or which specific question gap justifies more reading. This is the main Agent's judgment, not a fixed article-count threshold or external verification.",
+    "parameters": {"aspects": "1-12 objects: question, status (covered|partial|uncovered), evidence_refs, contrary_evidence_refs, gap", "decision": "continue | synthesize", "reason": "Why to continue or stop acquiring evidence", "next_need": "Required for continue: specific missing information", "sample_scope": "Authors, dates and limits of the actually read sample"}
+  },
+  {
+    "name": "context.open",
+    "description": "Restore a run-local offloaded observation. Small records are exact objects; large records return continuous original JSON-text pages, never summaries or new evidence. Follow next_offset for additional pages, or save a working view after analysis rather than repeatedly restoring the same page.",
+    "parameters": {"context_id": "Generated context_* ID from an offloaded_observation marker", "offset": "Optional character offset; use next_offset from the previous page", "limit": "Optional maximum characters, 1-12000; Runtime may reduce the page to fit input budget"}
+  },
+  {
+    "name": "memory_search",
+    "description": "Search this workspace's persisted user memory and preferences. It is context, not external market evidence.",
+    "parameters": {"query": "Bounded workspace-memory query", "top_k": "1-20"}
+  },
+  {
+    "name": "company_wiki_search",
+    "description": "搜索当前工作空间的用户背景、研究偏好和 Wiki 事实。",
+    "parameters": {"query": "Wiki 查询词", "top_k": "1-20"}
+  },
+  {
+    "name": "finance.report_read",
+    "description": "按需展开当前会话已授权的历史金融快照；只读，不联网。",
+    "parameters": {"report_id": "已授权报告 ID", "section": "sources|market_series|metrics|analysis|research_audit", "symbol": "行情展开时的品种", "document_id": "原文展开时的文档 ID", "offset": "分页起点", "limit": "1-30"}
+  }
+]

@@ -1,0 +1,14 @@
+<h1>14. 当前流程图与真实验收记录（2026-09-30）</h1>
+<p>上图按照当前代码实际执行方式绘制：所有请求先进入 AgentRuntime 和主 AgentLoop，再按 Skill 分流。普通问题直接走 general_chat；金融 /report 走 FinanceResearchGateway 与状态化 Workflow；Subagent 是按需受控复核能力，不是每次报告的固定阶段。</p>
+<h2>本轮真实验收</h2>
+<ul>
+  <li>普通问题：Trace <code>32250efa0c13470e9f30aa2cd3d5856b</code>，无 Subagent 委派，8 个步骤，验收通过。</li>
+  <li>分析与质疑：Trace <code>0052b836c9c8498a83dbd6638ff5718d</code>，委派 <code>analyst</code> 与 <code>skeptic</code>，验收通过。</li>
+  <li>来源核验：Trace <code>07354e12774a49f093cc248123d6e99d</code>，委派 <code>collector</code> 与 <code>verifier</code>，验收通过。</li>
+  <li>金融报告：Trace <code>d2da64b3a8424288a9c80e9ec9f63fb3</code>，生成报告 <code>fin_ff0c9ee2576b4589afec212a5e2d0a80</code>；行情事实可复算，黄金、白银和美股数据缺失时明确降级，没有补写模型猜测。</li>
+  <li>金融追问：复用已保存报告，通过 <code>artifact_read → evidence_audit → gate_check → final_answer</code>，没有重复联网取数。</li>
+</ul>
+<h2>发现并修复的问题</h2>
+<p>第一次金融运行被质量门阻断，原因是服务实际使用的 Python 环境缺少 <code>exchange_calendars</code>，无法验证交易日覆盖；补齐 <code>exchange-calendars==4.13.2</code> 并重启服务后，报告链路成功。这个失败 Trace 保留为环境依赖缺失的拒绝案例。</p>
+<h2>当前边界</h2>
+<p>当前实现已经能证明：运行链路、证据边界、Subagent 委派和失败阻断可观测。它还不能证明所有市场数据均已接入，也不能把文章与行情共现直接证明为因果；缺少数据时必须继续输出限制，而不是生成完整但不可验证的结论。</p>

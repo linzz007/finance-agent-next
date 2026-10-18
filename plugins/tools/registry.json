@@ -1,0 +1,115 @@
+[
+  {"name": "finance.analyze", "callable": "policy_impact.mcp_server.registry:finance_analyze"},
+  {"name": "article.search", "callable": "policy_impact.mcp_server.registry:finance_article_tool"},
+  {"name": "article.read", "callable": "policy_impact.mcp_server.registry:finance_article_tool"},
+  {"name": "article.claims", "callable": "policy_impact.mcp_server.registry:finance_article_tool"},
+  {"name": "source.discover", "callable": "policy_impact.mcp_server.registry:finance_article_tool"},
+  {"name": "source.fetch", "callable": "policy_impact.mcp_server.registry:finance_article_tool"},
+  {
+    "name": "artifact_read",
+    "callable": "policy_impact.mcp_server.registry:artifact_read"
+  },
+  {
+    "name": "company_profile_read",
+    "callable": "policy_impact.mcp_server.tools_company:company_profile_read"
+  },
+  {
+    "name": "company_context_pack_build",
+    "callable": "policy_impact.mcp_server.tools_company:company_context_pack_build"
+  },
+  {
+    "name": "company_wiki_blueprint",
+    "callable": "policy_impact.mcp_server.tools_company:company_wiki_blueprint"
+  },
+  {
+    "name": "company_wiki_search",
+    "callable": "policy_impact.mcp_server.tools_company:company_wiki_search"
+  },
+  {
+    "name": "company_update_proposal_create",
+    "callable": "policy_impact.mcp_server.tools_company:company_update_proposal_create"
+  },
+  {
+    "name": "company_update_apply",
+    "callable": "policy_impact.mcp_server.tools_company:company_update_apply"
+  },
+  {
+    "name": "policy_fetch_recent",
+    "callable": "policy_impact.mcp_server.tools_policy:policy_fetch_recent"
+  },
+  {
+    "name": "policy_ingest",
+    "callable": "policy_impact.mcp_server.tools_policy:policy_ingest"
+  },
+  {
+    "name": "policy_retrieve",
+    "callable": "policy_impact.mcp_server.tools_policy:policy_retrieve"
+  },
+  {
+    "name": "policy_clause_extract",
+    "callable": "policy_impact.mcp_server.tools_policy:policy_clause_extract"
+  },
+  {
+    "name": "report_write",
+    "callable": "policy_impact.mcp_server.tools_report:report_write"
+  },
+  {
+    "name": "memory_save",
+    "callable": "policy_impact.mcp_server.tools_report:memory_save"
+  },
+  {
+    "name": "memory_search",
+    "callable": "policy_impact.mcp_server.tools_report:memory_search"
+  },
+  {
+    "name": "news.load_items",
+    "callable": "policy_impact.mcp_server.tools_news:news_load_items"
+  },
+  {
+    "name": "news.structure_events",
+    "callable": "policy_impact.mcp_server.tools_news:news_structure_events"
+  },
+  {
+    "name": "news.analyze_company_impact",
+    "callable": "policy_impact.mcp_server.tools_news:news_analyze_company_impact"
+  },
+  {
+    "name": "finance.report_read",
+    "callable": "policy_impact.domains.finance.report_reader:read"
+  },
+  {"name": "article.list", "callable": "policy_impact.mcp_server.registry:finance_article_tool"},
+  {"name": "article.study", "callable": "policy_impact.mcp_server.registry:finance_article_tool"},
+  {"name": "research.plan", "callable": "policy_impact.mcp_server.registry:scoped_research_tool"},
+  {"name": "research.artifact", "callable": "policy_impact.mcp_server.registry:scoped_research_tool"},
+  {"name": "research.synthesize", "callable": "policy_impact.mcp_server.registry:scoped_research_tool"},
+  {"name": "research.verify", "callable": "policy_impact.mcp_server.registry:scoped_research_tool"},
+  {"name": "research.checkpoint", "callable": "policy_impact.mcp_server.registry:scoped_research_tool"},
+  {"name": "research.coverage", "callable": "policy_impact.mcp_server.registry:scoped_research_tool"},
+  {"name": "context.open", "callable": "policy_impact.mcp_server.registry:scoped_research_tool"},
+  {"name": "web.search", "callable": "policy_impact.mcp_server.registry:scoped_research_tool"},
+  {"name": "web.open", "callable": "policy_impact.mcp_server.registry:scoped_research_tool"},
+  {"name": "market.catalog", "callable": "policy_impact.mcp_server.registry:scoped_research_tool"},
+  {"name": "market.snapshot", "callable": "policy_impact.mcp_server.registry:scoped_research_tool"},
+  {"name": "market.metrics", "callable": "policy_impact.mcp_server.registry:scoped_research_tool"},
+  {"name": "market.series", "callable": "policy_impact.mcp_server.registry:scoped_research_tool"},
+  {
+    "name": "finance.collect",
+    "callable": "policy_impact.domains.finance.tools:collect"
+  },
+  {
+    "name": "finance.metrics",
+    "callable": "policy_impact.domains.finance.tools:metrics"
+  },
+  {
+    "name": "finance.research_audit",
+    "callable": "policy_impact.domains.finance.research_audit:audit"
+  },
+  {
+    "name": "finance.publish",
+    "callable": "policy_impact.domains.finance.tools:publish"
+  },
+  {
+    "name": "report_workflow.run",
+    "callable": "policy_impact.mcp_server.registry:report_workflow_run"
+  }
+]
