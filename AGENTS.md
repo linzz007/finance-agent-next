@@ -30,21 +30,54 @@ Change 010 offline baseline: 1589 passed / 30 skipped / 51 modules, 118.97 secon
 configuration/separation 10/10 and modified-file Ruff critical rules passed.
 No paid model tests; do not turn the earlier r009 strict 4/6 into a new live pass.
 
-Current phase (2026-10-18): jointly explain and review the existing 1.0 design,
-then compare approved behavior with code and test/Trace evidence. Follow the
-review tracker in `docs/README.md`; do not mark user acceptance from a static
-read or equate implementation with live validation. Discuss unspecified or
-conflicting design choices with the user; fix defects against confirmed design.
-Align documents, code and acceptance evidence before freezing a Git baseline.
-The repository currently has no first commit or remote; inspect privacy and
-secrets before staging, and confirm the remote before uploading. No database,
-queue, frontend or original-project changes are authorized by this review.
+Current phase (2026-10-18): retain 1.0 and implement Harness 2.0 scheduling contracts
+against frozen `docs/changes/013-harness-v2-dispatch-baseline.md`, version
+H2-DISPATCH-2026-10-18-v1. The user stopped further 1.0 review. The initial Git
+baseline is commit 715ed93 on main, pushed to the user-selected finance-agent-next
+repository; this is a backup, not proof of full acceptance. Inspect privacy and
+secrets before subsequent staging or uploads.
 
-Harness 2.0 is on hold until the 1.0 review and baseline freeze. The user's
-initial focus is main/subagent scheduling and context handoff/return inspired
-by Codex, not every backend capability in the broad proposal. Establish actual
-needs and approve a scoped design before implementation; do not invent 1.0
-defects to justify copying Codex.
+Read `docs/harness-v2/interface-contracts.md`, `sqlite-schema.md` and
+`redis-protocol.md` for the confirmed interfaces, transaction boundaries and delivery
+protocol. The user approved R1/R2/R3 and implementation; contract freeze is
+H2-CONTRACTS-2026-10-18-v1. Track implementation and remaining integration in
+`docs/changes/014-harness-v2-foundation.md`. Use temporary databases and isolated
+Redis namespaces in tests; do not migrate the user's live DB, change the default
+financial path, modify the frontend or run paid model calls without authorization.
+The opt-in H2 foundation, model execution, finance-domain acceptance and dispatch
+observability checks now have 194 passing offline cases and two skipped real Redis
+tests. The unchanged finance regression has 1589 passed / 30 skipped. See 014-017
+and 020 for the execution boundaries
+and focused evidence. The explicit `FinanceHarnessV2Service.for_finance_corpus`
+path can run model-selected article acquisition and `analyst@2.0.0` delegation;
+the legacy financial AgentLoop, public routes, deployed workers and paid-model
+validation remain absent. Do not equate this opt-in path with a finished H2
+production integration.
+Next map the real ResearchPlan, article states, EvidenceLedger, review and delivery
+position into the durable domain state; do not replay tools to simulate recovery.
+Keep default 1.0 unchanged. All physical model calls, including future structure
+repairs, must use the new ledger; do not call the old retrying complete() inside the
+new adapter.
+The focus remains main/subagent scheduling and context handoff/return inspired
+by Codex; do not expand financial research rules or invent 1.0 defects to justify
+copying a broader backend architecture.
+
+Change 016 adds the opt-in `FinanceRootExecutor` bridge and the
+`finance.root_state.v1` durable domain payload. Change 017 adds the explicit
+`FinanceHarnessV2Service` composition entry, model-driven article/analyst path,
+bounded article reads, authorized material handoff and compact-state guard. The
+focused tests cover durable wait/resume, model ledger entries, final state
+retention, invalid-state classification, explicit profile binding and partial
+delivery. This is not a public route or a switch of the default 1.0 financial
+entry point. The finance domain step remains responsible for planning,
+article/evidence decisions, review, and delivery content; the bridge only maps
+those decisions to capabilities, Checkpoints, and Result sections.
+
+## Historical 1.0 Constraints
+
+The iteration records below remain compatibility requirements. References to
+"current" in those records describe their original iterations, not a prohibition
+on the approved Harness 2.0 dispatch work above.
 
 Previously approved versioned research integration is recorded in change 004:
 the complete optional v2 path, quality-first budgets and parent-coordinated

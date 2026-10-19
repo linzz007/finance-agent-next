@@ -8,7 +8,6 @@ from typing import Any, Callable
 
 from policy_impact.harness.agent_runtime import AgentRuntime
 from policy_impact.harness.model_config import (
-    DEFAULT_MODEL_ID,
     configured_model_id,
     default_model_config,
     effective_model_config,
@@ -359,7 +358,11 @@ class ChatWorkbenchService:
         model_summary = cls._summarize_model_calls(steps)
         source_summary = cls._summarize_sources(steps)
         subagent_summary = cls._summarize_subagents(run, steps)
-        tool_summary = cls._summarize_tools(tool_calls)
+        failed_tool_results = [
+            step for step in steps
+            if step.get("step_type") == "tool_result" and step.get("status") == "failed"
+        ]
+        tool_summary = cls._summarize_tools(tool_calls, failed_tool_results)
         gate_summary = cls._summarize_gates(gate_steps)
         artifact_summary = cls._summarize_artifacts(run, steps)
         structured_events = cls._build_structured_events(run, steps)
@@ -744,13 +747,26 @@ class ChatWorkbenchService:
         }
 
     @staticmethod
-    def _summarize_tools(tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
+    def _summarize_tools(
+        tool_calls: list[dict[str, Any]],
+        failed_tool_results: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         names = [str(call.get("tool_name") or call.get("name") or "unknown") for call in tool_calls]
         decisions = Counter(str(call.get("policy_decision") or call.get("decision") or "unknown") for call in tool_calls)
-        failed = [
+        failed_records = [
             call
             for call in tool_calls
             if str(call.get("status") or "success").lower() not in {"ok", "success", "done", "allowed"}
+        ]
+        failed_results = list(failed_tool_results or [])
+        failed_result_call_ids = {
+            str((step.get("metadata") or {}).get("tool_call_id") or "")
+            for step in failed_results
+            if str((step.get("metadata") or {}).get("tool_call_id") or "")
+        }
+        unpaired_failed_records = [
+            call for call in failed_records
+            if str(call.get("call_id") or "") not in failed_result_call_ids
         ]
         denied = [
             call
@@ -761,7 +777,7 @@ class ChatWorkbenchService:
             "total_calls": len(tool_calls),
             "unique_tools": sorted(set(names)),
             "policy_decisions": dict(decisions),
-            "failed_calls": len(failed),
+            "failed_calls": len(failed_results) + len(unpaired_failed_records),
             "denied_calls": len(denied),
         }
 

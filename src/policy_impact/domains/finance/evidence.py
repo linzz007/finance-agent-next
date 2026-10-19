@@ -129,9 +129,12 @@ class EvidenceLedger:
             line_start=line_start,
             line_end=line_end,
             source_url=str(source_url),
-            # Article reads are already line-bounded. Preserve the observed text so
-            # downstream review can inspect every cited line, not just its opening.
-            excerpt=(str(excerpt or "") if source_type in {"author_article", "public_web_page"}
+            # Article reads and bounded market-series reads are complete observations
+            # for the requested range. Preserve them so downstream review can inspect
+            # every cited line/bar, not just an opening or metadata placeholder.
+            excerpt=(str(excerpt or "") if source_type in {
+                "author_article", "public_web_page", "market_bar_series",
+            }
                      else str(excerpt or "")[:1600]),
             legacy_ref=alias_values[0] if alias_values else "",
             metadata=dict(metadata or {}),

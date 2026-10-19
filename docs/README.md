@@ -2,9 +2,25 @@
 
 更新时间：2026-10-18。用户已确认：新项目以仓库 Markdown 为设计权威，飞书不再作为后续开发的必需依赖。
 
-快速阅读：[1.0 系统总览与策略地图](system-overview-v1.md)汇总当前流程、Prompt/Skills 关联、上下文的不同层次、多 Agent/存储边界和验证证据，再链接下列权威细节，不另外定义一套规则。[013 Harness 2.0 Agent 调度设计基线](changes/013-harness-v2-dispatch-baseline.md)是本轮已确认并冻结的调度语义基线，代码尚未实现；[012 Agent Dispatch Design](changes/012-agent-dispatch-design.md)保留为早期讨论稿；[Harness 2.0 多 Agent 研究方案](proposals/harness-v2-multi-agent.md)保留 Codex 调研依据，011 是较早的总体候选。
+快速阅读：[1.0 系统总览与策略地图](system-overview-v1.md)汇总当前流程、Prompt/Skills 关联、上下文的不同层次、多 Agent/存储边界和验证证据，再链接下列权威细节，不另外定义一套规则。[013 Harness 2.0 Agent 调度设计基线](changes/013-harness-v2-dispatch-baseline.md)是已冻结的调度语义基线；用户已确认三份细化契约，调度底座实现和剩余金融接入见 [014](changes/014-harness-v2-foundation.md)，队列压力、服务循环和安全清理补充见 [020](changes/020-dispatch-pressure-and-stream-retention.md)，验收 Query 的诊断/全量选择边界见 [021](changes/021-acceptance-query-selection.md)，供应方文本动作兼容见 [022](changes/022-text-action-compatibility.md)，状态版本不变量修复见 [023](changes/023-finance-state-revision-invariant.md)，C16 兼容回归见 [024](changes/024-harness-v2-c16-compatibility.md)，金融状态增量协议见 [026](changes/026-finance-state-update-protocol.md)。金融 Root 接入边界见 [017](changes/017-harness-v2-finance-loop-integration.md)。最新代码级 C01-C18 审查见[Harness 2.0 代码级验收报告](acceptance/harness-v2-code-acceptance-20261018.md)，跟进结果见[2026-10-19 验收跟进](acceptance/harness-v2-code-acceptance-followup-20261019.md)，DeepSeek 定向复验见[金融定向复验报告](acceptance/finance-live-acceptance-r3-20261019.md)。[012 Agent Dispatch Design](changes/012-agent-dispatch-design.md)保留为早期讨论稿；[Harness 2.0 多 Agent 研究方案](proposals/harness-v2-multi-agent.md)保留 Codex 调研依据，011 是较早的总体候选。
 
 ## 1. 从哪里开始
+
+本轮实时定向复验记录见[金融实时验收跟进报告（2026-10-19）](acceptance/finance-live-acceptance-followup-20261019.md)；它只报告 Q03/Q14 定向结果，不替代完整 30 条 Query 验收。
+
+### Harness 2.0 调度契约
+
+以下三份文档及 R1/R2/R3（等待挂起、终态追问、失败依赖）已获用户确认，冻结为 **H2-CONTRACTS-2026-10-18-v1**；金融状态增量协议另以 **finance.state_update.v1** 冻结，见 026。阅读顺序为接口流程 -> 存储事务 -> Redis 投递 -> 金融状态交接；代码与未完成项在 014/026 单独映射，不把设计确认等同全套实现。
+
+| 文档 | 唯一负责的内容 | 当前验证 |
+| --- | --- | --- |
+| [调度接口与验收](harness-v2/interface-contracts.md) | spawn/wait/status/send/cancel/resume、result.submit/get、内部 Worker/Adapter、兼容与故障验收 | Repository、Worker、单次模型执行/可信能力和显式注入 HTTP 边界已离线验证；默认 1.0 与生产接入保持不变 |
+| [SQLite 存储契约](harness-v2/sqlite-schema.md) | 18 张表、外键/唯一约束、状态迁移、原子事务和预算账本 | 显式迁移与临时 DB 故障/并发验证；未迁移真实数据库 |
+| [Redis Streams 协议](harness-v2/redis-protocol.md) | 消息格式、Outbox、claim/ACK、PEL 回收、Redis 丢失后的重建 | FakeRedis、故障注入及 20 轮脚本链路通过；真实 Redis 联测未运行 |
+
+013 继续是已确认语义基线；三份契约不是 1.0 金融研究接口的替代品。014 底座验证为 95 passed / 2 skipped；[015 模型执行与可信 Worker 能力](changes/015-harness-v2-model-execution.md)新增 78 项通过，020 又补充压力/观测用例；当前 H2 调度定向合计为 196 passed / 2 skipped（其中包含 C16 离线兼容测试 1 passed）。默认 1.0 回归仍为 1589 passed / 30 skipped。不拼成真实金融质量或商业化成功率。金融业务状态恢复尚未接通；环境配置另有一项既有工作区检查未通过，详情见 014 和最新[代码级验收报告](acceptance/harness-v2-code-acceptance-20261018.md)。
+
+### 现有研究设计
 
 | 文档 | 负责回答的问题 | 当前状态 |
 | --- | --- | --- |
@@ -36,7 +52,23 @@
 
 ## 4. 当前：保留 1.0 基线，推进 Harness 2.0
 
-2026-10-18 用户明确停止继续验收 1.0，保留现有金融研究链路作为兼容基线，直接推进 Harness 2.0 的主 Agent 调度、上下文交接和结果回传。当前已确认的[013 Harness 2.0 Agent 调度设计基线](changes/013-harness-v2-dispatch-baseline.md)仍未实现；不能把此前宽泛草案中的多机、多用户和完整异步并行全部当作本轮已实现能力，也不为学习 Codex 人为制造 1.0 缺陷。
+2026-10-18 用户明确停止继续验收 1.0，保留现有金融研究链路作为兼容基线，直接推进 Harness 2.0 的主 Agent 调度、上下文交接和结果回传。按[013 基线](changes/013-harness-v2-dispatch-baseline.md)及已确认契约，独立调度底座已实现，见 [014](changes/014-harness-v2-foundation.md)；单次模型执行与账本、可信能力入口进度见 [015](changes/015-harness-v2-model-execution.md)。金融 AgentLoop 尚未切换。不能把此前宽泛草案中的多机、多用户和完整业务异步并行全部当作本轮已实现能力，也不为学习 Codex 人为制造 1.0 缺陷。
+
+`016 Harness 2.0 Finance Root Executor` defines and implements the opt-in
+mapping from a financial root task to a durable finance state, checkpoint,
+child-task observations, and final result section. `017 Harness 2.0 Finance
+Loop Integration` now adds the opt-in model-driven finance composition: the
+root selects bounded article actions or a versioned analyst delegate, child
+results return through artifacts, and the root resumes durably before delivery.
+The default 1.0 entry point remains unchanged.
+
+`017 Harness 2.0 Finance Loop Integration` defines one durable finance domain
+step per root Attempt, compact mapping of plan/article/evidence/review/delivery
+state, and the explicit `FinanceHarnessV2Service.for_finance_corpus` entry.
+This opt-in path is offline-verified for model-driven article acquisition and
+analyst delegation, but it does not claim that the legacy synchronous financial
+AgentLoop, HTTP routes, production workers, or live financial data have already
+been converted.
 
 ### 4.1 怎么一起过文档
 
@@ -77,7 +109,9 @@
 
 ### 4.3 Git 冻结怎么做
 
-当前新仓库尚无首次提交，也未配置远端，不能称为已备份。完成共同复核后，先核对拟提交文件及凭证/隐私排除，再明确最终纳入的能力、未通过或未覆盖项、配置和测试证据，形成可复现的本地提交及版本标签；远端地址和可见性由用户确定后再上传。文章、Wiki、持仓、密钥、对话、Trace 与私有运行产物不进 Git。保存 1.0 不要求实现未批准的能力，也不允许把已知不符合冻结范围的缺陷改写成通过；尚未完成全面验收时应明确基线的限制。
+2026-10-18 已按用户要求创建首次提交 `715ed93` 并推送 `main` 到 `https://github.com/linzz007/finance-agent-next`，包含 1.0 现有代码及冻结的 013 设计，尚无调度 2.0 运行实现，也未创建版本标签。首次保存前全库测试为 2486 passed / 45 skipped / 19 failed，失败包含缺失本地业务 fixture 和继承契约不一致，不以 Git 备份替代验收通过。
+
+后续保存先核对拟提交文件及凭证/隐私排除，再记录能力、未通过或未覆盖项、配置与测试证据。文章、Wiki、持仓、密钥、对话、Trace 与私有运行产物不进 Git。保存 1.0 不要求实现未批准的能力，也不允许把已知不符合冻结范围的缺陷改写成通过；尚未完成全面验收时应明确基线的限制。
 
 ### 4.4 已确认决定继续有效
 
@@ -114,3 +148,4 @@
 | 后续设计 | 自定义逐篇分析要求、更广生命周期、队列/事务及多人并发不属于本轮，不阻塞当前个人研究路径验收 |
 
 运行产物保存在Git忽略的`data/acceptance/`，不将文章、Wiki、持仓、凭证、完整回答或Trace提交到设计文档。各次变更记录只保留汇总、缺陷及未覆盖能力；最新六次人工验收及后续离线修复报告为`data/acceptance/009-context-and-v1-report.md`，此前报告为`data/acceptance/008-review-delivery-report.md`和`data/acceptance/007-transport-report.md`。固定批次已结束，不继续付费循环到偶然通过。
+- [025 Harness 2.0 明确基线缺口修复](changes/025-harness-v2-explicit-baseline-fixes.md)

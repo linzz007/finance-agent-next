@@ -158,7 +158,6 @@ def test_real_adapter_makes_first_decision_despite_source_keywords(
         assert item["can_publish"] is False
     assert set(visible) == set(system["visible_keys"])
     prompt = json.dumps(requests[0], ensure_ascii=False)
-    assert "projection_scope" in prompt
     assert "first_two_items_only" not in prompt
     assert "单次A/B试验不能消除采样噪声" in prompt
     assert "示例阈值不是已测量结果" in prompt

@@ -103,13 +103,16 @@ def test_default_manifest_tools_and_subagents_preserve_current_contracts():
     registry = SkillRegistry()
 
     assert registry.get_manifest("general_chat").allowed_tools == (
+        "skill.open",
+        "tool.describe",
         "finance.report_read",
         "research.plan",
         "research.artifact",
+        "research.disposition",
         "research.synthesize",
         "research.verify",
         "research.checkpoint",
-            "research.coverage",
+        "research.coverage",
         "context.open",
         "article.list",
         "article.read",
@@ -188,11 +191,12 @@ def test_default_manifest_tools_and_subagents_preserve_current_contracts():
 
 
 def test_every_default_manifest_tool_is_registered():
+    runtime_owned = {"skill.open", "tool.describe", "research.disposition"}
     missing = {
         (manifest.id, tool_id)
         for manifest in SkillRegistry().list_manifests()
         for tool_id in manifest.allowed_tools
-        if tool_id not in TOOLS
+        if tool_id not in TOOLS and tool_id not in runtime_owned
     }
 
     assert missing == set()

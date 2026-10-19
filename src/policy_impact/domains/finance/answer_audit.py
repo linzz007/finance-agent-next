@@ -364,7 +364,7 @@ class AnswerAudit:
             missing_articles = []
             for article_ref in target["article_refs"]:
                 def matches(row, article_ref=article_ref):
-                    return article_ref in {row.get("article_id"), row.get("source_ref")}
+                    return _article_ref_matches(article_ref, row)
 
                 if not any(matches(known[value]) for value in selected_ids):
                     matching_ids = [value for value, row in known.items() if matches(row)]
@@ -446,7 +446,7 @@ class AnswerAudit:
             detail["provided_evidence_ids"] = selected_ids.copy()
             detail["provided_article_refs"] = [
                 value for value in target["article_refs"] if any(
-                    value in {known[evidence_id].get("article_id"), known[evidence_id].get("source_ref")}
+                    _article_ref_matches(value, known[evidence_id])
                     for evidence_id in selected_ids
                 )
             ]
@@ -1594,6 +1594,31 @@ def _may_assert_shared_author_claim(line: str, authors: list[str]) -> bool:
 def _article_path_in_chunk(source_ref: str, chunk: str) -> bool:
     parts = source_ref.replace("\\", "/").casefold().split("/")
     return len(parts) >= 3 and "/".join(parts[-3:]) in chunk.casefold()
+
+
+def _article_ref_matches(requested: Any, row: dict[str, Any]) -> bool:
+    """Match stable article IDs and relative paths against workspace paths.
+
+    Model-produced review targets commonly use the corpus-relative path while
+    the evidence ledger records the absolute path of the isolated acceptance
+    workspace. The path suffix is safe here because the corpus contract is
+    ``<author>/articles/<filename>``; exact IDs and paths still take priority.
+    """
+    requested_text = str(requested or "").strip()
+    if not requested_text:
+        return False
+    exact = {str(row.get("article_id") or ""), str(row.get("source_ref") or "")}
+    if requested_text in exact:
+        return True
+    requested_path = requested_text.replace("\\", "/").strip("/")
+    # Review targets often attach the source line span to a corpus-relative
+    # path, while the ledger keeps line_start/line_end as structured fields.
+    requested_path = re.sub(r":L\d+(?:-L?\d+)?$", "", requested_path, flags=re.IGNORECASE)
+    requested_path = requested_path.casefold()
+    source_path = str(row.get("source_ref") or "").replace("\\", "/").strip("/").casefold()
+    if not requested_path or not source_path:
+        return False
+    return source_path.endswith("/" + requested_path)
 
 
 def _article_date_in_chunk(published_at: str, chunk: str) -> bool:

@@ -43,6 +43,9 @@ def test_market_tools_keep_acquisition_and_calculation_separate(monkeypatch):
     assert series["bars"][0]["close"] == 100
     assert series["evidence_id"].startswith("evidence_")
     assert tool.ledger.get(series["evidence_id"]).source_type == "market_bar_series"
+    evidence_excerpt = tool.ledger.get(series["evidence_id"]).excerpt
+    assert '"close": 100' in evidence_excerpt
+    assert '"bars"' in evidence_excerpt
     assert "evidence_id" not in tool.series(result["snapshot_id"], "spx", offset=1)
     with pytest.raises(ValueError):
         tool.metrics("finance_other_turn")

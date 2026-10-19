@@ -845,6 +845,42 @@ def test_real_missing_participant_has_structured_unchecked_coverage():
     assert result["unchecked_target_ids"] == ["target-1"]
 
 
+def test_relative_article_path_matches_absolute_workspace_evidence_path():
+    ledger = EvidenceLedger()
+    ref = ledger.add_article(
+        {
+            "article_id": "article-1",
+            "path": r"D:\acceptance\workspace\data\finance\articles\TT\articles\2026-09-30-note.md",
+            "author": "TT",
+            "published_at": "2026-09-30",
+            "content_hash": "hash-1",
+        },
+        excerpt=(
+            "# Note\n"
+            "Published: 2026-09-30\n"
+            "The author argues that the market move is conditional on rates.\n"
+        ),
+    )
+
+    def complete(messages, schema_name):
+        assert schema_name == "finance_target_answer_audit.v1"
+        return _retained_target(messages[1]["content"])
+
+    target = _target(
+        article_refs=["TT/articles/2026-09-30-note.md:L1-L3"],
+        evidence_refs=[ref.evidence_id],
+    )
+    result = AnswerAudit(ledger, complete).call(
+        "The author presents a conditional view tied to rates.",
+        review_targets=[target],
+    )
+
+    detail = result["coverage_detail"]["targets"][0]
+    assert result["answer_audit_coverage"] == "complete"
+    assert detail["missing_article_refs"] == []
+    assert detail["provided_article_refs"] == ["TT/articles/2026-09-30-note.md:L1-L3"]
+
+
 def test_invalid_observed_source_text_stays_partial_and_is_never_cached():
     ledger = EvidenceLedger()
     ref = ledger.add_reference(source_type="author_article", provenance="author_view",

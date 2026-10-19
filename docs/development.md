@@ -23,7 +23,7 @@
 
 ## 2. 当前技术与代码地图
 
-保留 Python、FastAPI、原生 HTML/CSS/JavaScript、Pydantic、SQLite，以及自研 Agent Runtime / Harness。不引入新的 Agent 框架、消息队列、数据库服务或固定业务 DAG。后续已批准的版本化研究迭代新增可选能力 Prompt/Skills，旧版能力兼容保留。
+保留 Python、FastAPI、原生 HTML/CSS/JavaScript、Pydantic、SQLite，以及自研 Agent Runtime / Harness。1.0 不依赖新队列；用户已批准 Harness 2.0 使用 SQLite + 可选 Redis Streams，不引入 Agent 框架或固定业务 DAG。契约与调度底座进度见 [014](changes/014-harness-v2-foundation.md)，它不替换默认 1.0。
 
 | 位置 | 职责 |
 | --- | --- |
@@ -31,6 +31,10 @@
 | `src/policy_impact/app/finance_research_app.py` | 金融专用 API 组合；隔离旧产品入口 |
 | `src/policy_impact/app/chat_workbench_service.py` | 会话、消息、Wiki 与 Trace 服务 |
 | `src/policy_impact/harness/`、`runtime/` | AgentLoop、模型传输、上下文、工具权限、委派与运行状态 |
+| `src/policy_impact/dispatch/` | 可选 Harness 2.0 调度底座：18 表 DDL/显式迁移、Repository、Outbox、Redis Streams、脚本 Worker、显式服务循环与运行记录观测；尚未接入默认金融入口 |
+| `src/policy_impact/dispatch/finance_root.py` | 可选金融 root bridge：`FinanceRootState`、单步 domain callback、durable wait/resume 和 `finance_state` 结果区段；默认 1.0 不切换 |
+| `src/policy_impact/dispatch/finance_service.py` | 可选 H2 金融运行入口：显式创建 root run、绑定 profile/权限、驱动 Dispatcher/Worker；不自动接管 1.0 |
+| `src/policy_impact/dispatch/model_execution.py`、`execution.py` | 可选单次异步模型请求、真实请求账本及 Worker 可信调度/检查点能力；接入边界与测试见 [015](changes/015-harness-v2-model-execution.md) |
 | `src/policy_impact/domains/finance/` | 文章、证据、研究状态、综合、验证与答案交付 |
 | `src/policy_impact/runtime/research_contracts.py` | 新版严格任务/结果契约，不替代旧 claims 输出 |
 | `src/policy_impact/domains/finance/research_execution.py`、`research_records.py` | 授权全文输入、理解/综合/工作视图、接收与运行内恢复 |
@@ -45,7 +49,7 @@
 
 内部包名暂保留 `policy_impact`，避免为了改产品名而重写大量导入。继承的无关模块暂不直接删除，因为共享服务存在静态依赖；金融入口不暴露其业务能力，之后按依赖测试逐步清理。
 
-现有 Runtime 不等于生产级调度系统：Subagent 委派仍有同步调用，HTTP 流任务使用进程内线程池，数据库为本地 SQLite。多进程队列、租约恢复、多租户隔离、幂等和负载验收尚需分别设计，不能因这次复制宣称已实现商业化并发。
+默认金融 Runtime 的 Subagent 委派仍有同步调用，HTTP 流任务使用进程内线程池，数据库为本地 SQLite。可选 dispatch 模块已提供租约、Outbox、等待唤醒与幂等；015 又接通单次模型传输/账本和可信 Worker 能力。金融主循环的业务状态恢复、业务入口、真实模型对照、服务部署或负载验收尚未完成；不能据此宣称已实现生产级多用户系统。
 
 当前可选新版从主 Agent 的 [versioned_research Skill](../plugins/skills/finance/versioned_research.md)进入；显式 `analyst@2.0.0` 使用[角色 Prompt](../plugins/prompts/subagents/analyst_v2.md)和任务导向的[阅读](../plugins/prompts/finance/skills/research_reading.md)/[综合](../plugins/prompts/finance/skills/research_synthesis.md)能力说明。注册、参数、测试与未验收项统一见[变更 004](changes/004-versioned-research-implementation.md)，不在此再维护一份配置数值。
 
@@ -67,7 +71,7 @@
 
 记录时分清三件事：设计是待确认/已确认/被替代；代码是未实现/部分实现/已实现；验证是未验证/通过/未通过/无法判断。设计确认、代码存在和验收通过不能相互替代。文档迁移中发现的旧规则冲突只先修文本、记录实现待核对项，不顺手重写 Runtime。
 
-当前共同确认顺序是产品目标、总体架构、接口和验收，再选择具体迭代。Run/Subagent 的队列、事务、重启恢复和多用户设计尚未因本次文档整理获得实现授权。
+后续以各次变更的明确确认推进；013 及 H2-CONTRACTS-2026-10-18-v1 已授权本轮调度队列、事务和恢复实现。多租户/多机、默认业务切换、付费模型批次不因调度契约冻结而自动获得授权。
 
 验收至少分清：代码/权限/接口是否符合约定、真实模型链路是否符合设计、金融分析质量是否有充分证据，以及系统在重复调用/负载下是否稳定。后一层不能由前一层代替。
 

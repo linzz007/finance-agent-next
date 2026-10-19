@@ -45,7 +45,7 @@ def _research_route(route: APIRoute) -> bool:
     return "/finance/reports" not in path
 
 
-def create_app() -> FastAPI:
+def create_app(*, harness_v2_service=None) -> FastAPI:
     app = FastAPI(title="finance-agent-next", version="0.1.0")
     selected = APIRouter()
     for route in shared.app.routes:
@@ -73,6 +73,11 @@ def create_app() -> FastAPI:
     @app.get("/companies/{company_id}/workbench/skills", dependencies=[Depends(require_finance_scope)])
     def skills(company_id: str) -> dict:
         return {"skills": [s for s in shared.workbench_service.list_skills() if s["id"] == "general_chat"]}
+
+    if harness_v2_service is not None:
+        from policy_impact.dispatch.http_api import register_harness_v2_routes
+
+        register_harness_v2_routes(app, harness_v2_service)
 
     return app
 

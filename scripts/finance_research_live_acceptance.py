@@ -21,6 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
+DIAGNOSTIC_CASES = ("Q04", "Q08", "Q14")
+FROZEN_CASE_IDS = tuple(f"Q{index:02d}" for index in range(1, 31))
+
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -116,11 +119,13 @@ def reuse_snapshot(source_run: Path, destination: Path) -> tuple[dict, str]:
 
 
 def load_cases(document: Path) -> dict[str, str]:
-    rows = re.findall(r"^\| (Q\d{2}) \| ([^|]+) \|", document.read_text(encoding="utf-8"), re.M)
+    rows = re.findall(r"^\| (Q\d{2}) \| ([^|]+) \|", document.read_text(encoding="utf-8"), re.MULTILINE)
     queries = {key: query.strip() for key, query in rows}
     if len(rows) != 30 or len(queries) != 30:
         raise ValueError("Expected exactly the 30 frozen business queries")
-    return {key: queries[key] for key in ("Q04", "Q08", "Q14")}
+    if tuple(queries) != FROZEN_CASE_IDS:
+        raise ValueError("Frozen business queries must be ordered Q01 through Q30")
+    return queries
 
 
 def code_inventory() -> dict[str, str]:
@@ -157,11 +162,11 @@ def synthetic_messages(large: bool, limit: int) -> list[dict]:
 
 def probe_service(output: Path, limits) -> bool:
     from policy_impact.harness.context_manifest import estimate_tokens
+    from policy_impact.harness.model_config import effective_model_config
     from policy_impact.harness.model_gateway import ModelInvocationError
     from policy_impact.harness.openai_model_gateway import OpenAICompatibleModelAdapter
-    from policy_impact.harness.responses_model_gateway import ResponsesModelAdapter
-    from policy_impact.harness.model_config import effective_model_config
     from policy_impact.harness.research_budget import execution_scope
+    from policy_impact.harness.responses_model_gateway import ResponsesModelAdapter
 
     success = True
     for name, large in (("short", False), ("configured_input", True)):
@@ -188,7 +193,7 @@ def probe_service(output: Path, limits) -> bool:
                                 == "alpha|beta|gamma" else "unexpected_response")
         except ModelInvocationError as exc:
             record.update(status="model_error", error=str(exc), metadata=exc.metadata)
-        except Exception:
+        except Exception:  # noqa: BLE001 - preserve probe diagnostics for any runtime failure
             record.update(status="probe_error", error=traceback.format_exc())
         record.update(finished_at=now(), duration_seconds=round(time.monotonic() - started, 2))
         write_json(output / f"probe_{name}.json", record)
@@ -219,7 +224,7 @@ def progress(stop: threading.Event, store, run_id: str, case_id: str) -> None:
             last = steps[-1] if steps else {}
             print(json.dumps({"case": case_id, "status": "running", "steps": len(steps),
                               "last_step": last.get("step_type"), "last_status": last.get("status")}), flush=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - progress reporting must not stop the run
             print(json.dumps({"case": case_id, "progress_error": type(exc).__name__}), flush=True)
 
 
@@ -267,7 +272,7 @@ def run_case(output: Path, key: str, repetition: int, query: str, research_day: 
             reporter.start()
             result = runtime.coordinator.execute_prepared_turn(prepared)
             record.update(status="returned", answer=result.get("answer", ""), result=result)
-        except Exception:
+        except Exception:  # noqa: BLE001 - retain the complete acceptance failure record
             record.update(status="execution_error", error=traceback.format_exc())
         finally:
             stop.set()
@@ -338,7 +343,10 @@ def main() -> int:
     parser.add_argument("--live", action="store_true", help="Explicitly enable paid model calls")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--repetitions", type=int, choices=range(1, 4), default=3)
-    parser.add_argument("--cases", nargs="+", choices=("Q04", "Q08", "Q14"), default=["Q04", "Q08", "Q14"])
+    parser.add_argument("--cases", nargs="+", choices=FROZEN_CASE_IDS,
+                        help="Explicit query IDs; default is the bounded diagnostic set")
+    parser.add_argument("--all-cases", action="store_true",
+                        help="Explicitly select all 30 frozen business queries")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--model", help="Override only this process's model ID, not application configuration")
     selection.add_argument("--model-profile", help="Select an independent named provider configuration")
@@ -352,9 +360,12 @@ def main() -> int:
         parser.error("--output must be a new subdirectory inside data/acceptance")
     if output.exists():
         parser.error("Refusing to overwrite an existing acceptance run")
+    if args.all_cases and args.cases:
+        parser.error("--all-cases cannot be combined with --cases")
+    selected_case_ids = list(FROZEN_CASE_IDS if args.all_cases else (args.cases or DIAGNOSTIC_CASES))
     if sys.platform == "win32":
         try:
-            validate_windows_generated_paths(output, args.cases, args.repetitions)
+            validate_windows_generated_paths(output, selected_case_ids, args.repetitions)
         except ValueError as exc:
             parser.error(str(exc))
     from run_finance import configure_environment
@@ -371,11 +382,11 @@ def main() -> int:
         parser.error("No model credential configured")
     if status["protocol"] not in {"openai-compatible", "openai-responses"}:
         parser.error("This acceptance's synthetic probes require the configured OpenAI-compatible service")
-    if len(set(args.cases)) != len(args.cases):
+    if len(set(selected_case_ids)) != len(selected_case_ids):
         parser.error("Duplicate case IDs are not allowed")
     output.mkdir(parents=True)
     available_queries = load_cases(ROOT / "docs/finance_agent_eval_v1_acceptance.md")
-    queries = {key: available_queries[key] for key in args.cases}
+    queries = {key: available_queries[key] for key in selected_case_ids}
     limits = ResearchLimits.from_env()
     research_day = date.today().isoformat()
     if args.snapshot_from:
@@ -391,6 +402,7 @@ def main() -> int:
         copy_file(ROOT / name, output / "provenance/code" / name)
     manifest = {"started_at": now(), "model": status, "research_limits": limits.describe(),
                 "research_day": research_day, "queries": queries, "repetitions": args.repetitions,
+                "case_selection": "all_frozen_30" if args.all_cases else "explicit_or_diagnostic",
                 "snapshot_source": str(args.snapshot_from.resolve()) if args.snapshot_from else None,
                 "snapshot": snapshot, "code_files": code_files, "automatic_semantic_scoring": False}
     write_json(output / "manifest.json", manifest)

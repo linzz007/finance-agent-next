@@ -102,6 +102,20 @@ class MarketResearch:
             content_hash = hashlib.sha256(json.dumps(
                 result["bars"], ensure_ascii=False, sort_keys=True, default=str,
             ).encode("utf-8")).hexdigest()
+            evidence_excerpt = json.dumps(
+                {
+                    "symbol": symbol,
+                    "unit": match["unit"],
+                    "price_basis": match["price_basis"],
+                    "provider": match["provider"],
+                    "source_url": match["source_url"],
+                    "offset": offset,
+                    "bars": result["bars"],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
             evidence = self.ledger.add_reference(
                 source_type="market_bar_series",
                 provenance="retrieved_public_market_data",
@@ -110,10 +124,7 @@ class MarketResearch:
                 retrieved_at=str(match["retrieved_at"]),
                 published_at=str(result["bars"][-1].get("date") or ""),
                 source_url=str(match["source_url"]),
-                excerpt=(
-                    f"{symbol} daily bars {result['bars'][0].get('date')} to "
-                    f"{result['bars'][-1].get('date')}; inspect the bounded tool result for values."
-                ),
+                excerpt=evidence_excerpt,
                 metadata={
                     "snapshot_id": snapshot_id, "symbol": symbol, "offset": offset,
                     "bar_count": len(result["bars"]), "unit": match["unit"],

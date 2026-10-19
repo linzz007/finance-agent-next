@@ -9,7 +9,7 @@ from scripts import finance_research_live_acceptance as live
 
 def test_fixed_cases_reuse_original_query_text():
     queries = live.load_cases(live.ROOT / "docs/finance_agent_eval_v1_acceptance.md")
-    assert list(queries) == ["Q04", "Q08", "Q14"]
+    assert list(queries) == list(live.FROZEN_CASE_IDS)
     assert "2026-09-30" in queries["Q04"]
     assert "近几个月" in queries["Q08"]
     assert "TT 和培风客" in queries["Q14"]
@@ -126,8 +126,39 @@ def test_single_case_revalidation_is_explicit_and_bounded(tmp_path, monkeypatch,
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["repetitions"] == 1
     assert manifest["queries"] == {"Q08": "q8"}
+    assert manifest["case_selection"] == "explicit_or_diagnostic"
     assert manifest["snapshot"] == snapshot
     assert manifest["automatic_semantic_scoring"] is False
+
+
+def test_all_cases_selection_is_explicit(tmp_path, monkeypatch):
+    monkeypatch.setattr(live, "ROOT", tmp_path)
+    monkeypatch.setenv("ANTHROPIC_MODEL", "fixture-default")
+    monkeypatch.delenv("AGENT_WORKBENCH_MODEL_PROFILE", raising=False)
+    monkeypatch.setattr("run_finance.configure_environment", lambda **kwargs: tmp_path / "corpus")
+    monkeypatch.setattr(live, "validate_windows_generated_paths", lambda *args: None)
+    monkeypatch.setattr("policy_impact.harness.model_config.model_runtime_status", lambda: {
+        "available": True, "protocol": "openai-compatible", "model_id": "fixture-override"})
+    monkeypatch.setattr("policy_impact.domains.finance.article_profile.load_holdings", lambda path: {})
+    monkeypatch.setattr("policy_impact.domains.finance.article_profile.load_research_policy", lambda path: "")
+    monkeypatch.setattr(live, "load_cases", lambda path: {
+        key: key.lower() for key in live.FROZEN_CASE_IDS
+    })
+    snapshot = {"files": {}, "article_counts": {"Fixture": 1}}
+    monkeypatch.setattr(live, "reuse_snapshot", lambda source, target: (snapshot, "2026-10-17"))
+    monkeypatch.setattr(live, "inventory", lambda path: {})
+    monkeypatch.setattr(live, "code_inventory", dict)
+    monkeypatch.setattr(live, "probe_service", lambda output, limits: True)
+    monkeypatch.setattr(live, "run_case", lambda output, key, repetition, query, clock: {
+        "case": f"{key}-r{repetition}", "status": "returned", "answer": "Fixture answer"})
+    output = tmp_path / "data/acceptance/all"
+    monkeypatch.setattr("sys.argv", ["acceptance", "--live", "--output", str(output),
+        "--repetitions", "1", "--all-cases", "--snapshot-from",
+        str(tmp_path / "data/acceptance/original")])
+    assert live.main() == 0
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert list(manifest["queries"]) == list(live.FROZEN_CASE_IDS)
+    assert manifest["case_selection"] == "all_frozen_30"
 
 
 def test_synthetic_probe_respects_configured_input_estimate():

@@ -26,6 +26,63 @@ _SUBAGENT_SCHEMA_OUTPUT_KEYS = {
 _ACTION_TYPES = {"final", "tool_call", "delegate", "request_approval"}
 
 
+def _parse_dsml_tool_action(content: str) -> dict[str, Any] | None:
+    """Convert one DeepSeek text-mode DSML tool call into an internal action.
+
+    The gateway may use either ASCII ``||`` or full-width vertical bars in the
+    marker. Anything beyond one ``tool_call`` and its named parameters is
+    rejected so arbitrary XML/prose cannot become executable input.
+    """
+    marker = r"(?:\|\||\uff5c\uff5c)DSML(?:\|\||\uff5c\uff5c)"
+    calls = re.fullmatch(
+        rf"\s*<{marker}\s+calls>\s*(?P<body>.*?)\s*</{marker}\s+calls>\s*",
+        content,
+        flags=re.DOTALL,
+    )
+    if calls is None:
+        return None
+    invoke = re.fullmatch(
+        rf"\s*<{marker}\s+invoke\s+name=\"(?P<name>[^\"]+)\">"
+        rf"(?P<body>.*?)</{marker}\s+invoke>\s*",
+        calls.group("body"),
+        flags=re.DOTALL,
+    )
+    if invoke is None or invoke.group("name") != "tool_call":
+        return None
+    parameter_pattern = re.compile(
+        rf"<{marker}\s+parameter\s+name=\"(?P<name>[^\"]+)\"\s+"
+        rf"string=\"(?P<string>true|false)\">(?P<value>.*?)"
+        rf"</{marker}\s+parameter>",
+        flags=re.DOTALL,
+    )
+    parameters: dict[str, Any] = {}
+    cursor = 0
+    body = invoke.group("body")
+    for match in parameter_pattern.finditer(body):
+        if body[cursor:match.start()].strip():
+            return None
+        name = match.group("name")
+        if name in parameters:
+            return None
+        value: Any = match.group("value")
+        if match.group("string") == "false":
+            try:
+                value = json.loads(value.strip())
+            except json.JSONDecodeError:
+                return None
+        parameters[name] = value
+        cursor = match.end()
+    if body[cursor:].strip() or "tool_name" not in parameters:
+        return None
+    action: dict[str, Any] = {
+        "type": "tool_call",
+        "tool_name": parameters["tool_name"],
+    }
+    if "arguments" in parameters:
+        action["arguments"] = parameters["arguments"]
+    return action
+
+
 @dataclass
 class ModelResponse:
     response_id: str
@@ -142,7 +199,11 @@ class AnthropicCompatibleModelAdapter:
                 if str(data.get("stop_reason") or "") == "max_tokens":
                     raise ValueError("模型输出被 max_tokens 截断")
                 response_text = self._response_text(data)
-                payload = self._parse_json_payload(response_text)
+                payload = (
+                    self._parse_action_payload(response_text)
+                    if schema_name in {"agent_action.v1", "general_chat_agent_loop.v1", "finance.research_result.v1"}
+                    else self._parse_json_payload(response_text)
+                )
                 payload = self._normalize_schema_envelope(payload, schema_name)
                 self._validate_schema(payload, schema_name)
                 latency_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -309,7 +370,7 @@ class AnthropicCompatibleModelAdapter:
                     continue
                 response_text = adapter._response_text(data)
                 if schema_name in {"agent_action.v1", "general_chat_agent_loop.v1", "finance.research_result.v1"}:
-                    parsed = json.loads(response_text)
+                    parsed = self._parse_action_payload(response_text)
                     if not isinstance(parsed, dict):
                         raise ValueError("public action must be one JSON object")
                 else:
@@ -594,6 +655,27 @@ class AnthropicCompatibleModelAdapter:
                             "transport_metadata": data.get("transport_metadata") or {}}
             raise ModelInvocationError("模型没有返回文本内容", metadata=metadata)
         return text
+
+    @staticmethod
+    def _parse_action_payload(content: str) -> dict[str, Any]:
+        """Parse JSON actions and one strict text-tool compatibility envelope.
+
+        Some OpenAI-compatible gateways expose DeepSeek's DSML action syntax as
+        ordinary assistant text even when native tool calling is disabled. It
+        is not executed directly: this parser converts exactly one ``tool_call``
+        into the internal JSON action, after which the existing schema, policy,
+        and tool-argument validation still runs.
+        """
+        text = str(content or "").strip()
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            payload = _parse_dsml_tool_action(text)
+            if payload is None:
+                raise ValueError(f"响应不是合法 JSON：{exc.msg}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("响应顶层必须是 JSON 对象")  # noqa: TRY004 - enters the existing format-retry branch
+        return payload
 
     @staticmethod
     def _parse_json_payload(content: str) -> dict[str, Any]:

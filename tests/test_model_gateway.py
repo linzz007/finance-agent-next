@@ -351,6 +351,37 @@ def test_chat_tool_action_accepts_name_alias_from_compatible_model() -> None:
     }
 
 
+def test_chat_tool_action_normalizes_deepseek_dsml_text_without_native_tools() -> None:
+    adapter = AnthropicCompatibleModelAdapter(
+        model_id="deepseek-v4-flash", base_url="https://example.invalid",
+        api_key="test-key", max_attempts=1,
+    )
+    marker = chr(0xFF5C) * 2
+    dsml = (
+        f"<{marker}DSML{marker} calls>\n"
+        f"<{marker}DSML{marker} invoke name=\"tool_call\">\n"
+        f"<{marker}DSML{marker} parameter name=\"tool_name\" string=\"true\">article.list"
+        f"</{marker}DSML{marker} parameter>\n"
+        f"<{marker}DSML{marker} parameter name=\"arguments\" string=\"false\">"
+        f"{{\"author\": \"TT\"}}</{marker}DSML{marker} parameter>\n"
+        f"</{marker}DSML{marker} invoke>\n"
+        f"</{marker}DSML{marker} calls>"
+    )
+    adapter._request = lambda _system, _messages: {  # type: ignore[method-assign]
+        "id": "dsml-tool", "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": dsml}],
+    }
+
+    result = adapter.complete(
+        [{"role": "user", "content": "Browse TT articles"}],
+        "general_chat_agent_loop.v1",
+    )
+
+    assert result.payload == {
+        "type": "tool_call", "tool_name": "article.list", "arguments": {"author": "TT"}
+    }
+
+
 def test_chat_tool_action_defaults_omitted_arguments_to_empty_object() -> None:
     adapter = AnthropicCompatibleModelAdapter(
         model_id="deepseek-v4-flash", base_url="https://example.invalid",

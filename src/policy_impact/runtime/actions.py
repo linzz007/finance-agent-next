@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from math import isfinite
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from policy_impact.runtime.research_contracts import ResearchTask
-
 
 ALLOWED_ACTION_NAMES = ("final", "tool_call", "delegate", "request_approval")
 
@@ -36,10 +42,101 @@ def _validate_json_value(value: Any, *, path: str = "value") -> None:
 class _ActionModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    @model_serializer(mode="wrap")
+    def omit_empty_optional_fields(self, handler):
+        """Keep the public action envelope compact on the wire."""
+        result = handler(self)
+        return {key: value for key, value in result.items() if value is not None}
+
+
+class ArticleStateUpdate(_ActionModel):
+    """Model suggestions for a discovered article; runtime owns read/use facts."""
+
+    article_id: str
+    relevance: Literal["primary", "secondary", "background"] | None = None
+    requested_depth: Literal["shallow", "deep"] | None = None
+    disposition: Literal["considered", "exclude", "follow_up"] | None = None
+    reason: str | None = None
+
+    @field_validator("article_id", "reason", mode="before")
+    @classmethod
+    def validate_text(cls, value: object, info: Any) -> object:
+        if value is None and info.field_name == "reason":
+            return value
+        return _nonblank_text(value, field_name=info.field_name)
+
+
+class EvidenceAddition(_ActionModel):
+    claim_id: str
+    evidence_ref: str
+    relation: Literal["supports", "contradicts", "contextualizes"]
+    source_kind: Literal["article", "external", "model_inference"]
+    scope: str
+    certainty: Literal["direct", "conditional", "inconclusive"]
+    note: str | None = None
+
+    @field_validator("claim_id", "evidence_ref", "scope", "note", mode="before")
+    @classmethod
+    def validate_text(cls, value: object, info: Any) -> object:
+        if value is None and info.field_name == "note":
+            return value
+        return _nonblank_text(value, field_name=info.field_name)
+
+    @model_validator(mode="after")
+    def validate_certainty(self):
+        if self.source_kind == "model_inference" and self.certainty == "direct":
+            raise ValueError("model_inference cannot be marked direct")
+        return self
+
+
+class StateUpdate(_ActionModel):
+    """Optional compact finance Root delta carried by an H2 model action."""
+
+    research_plan: dict[str, Any] | None = None
+    article_updates: list[ArticleStateUpdate] = Field(default_factory=list)
+    evidence_additions: list[EvidenceAddition] = Field(default_factory=list)
+    coverage: dict[str, Any] | None = None
+    review: dict[str, Any] | None = None
+    delivery: dict[str, Any] | None = None
+
+    @field_validator("research_plan", "coverage", "review", "delivery")
+    @classmethod
+    def validate_json_object(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None:
+            _validate_json_value(value)
+        return value
+
+    @model_validator(mode="after")
+    def reject_non_compact_fields(self):
+        forbidden = {
+            "article_body",
+            "article_content",
+            "body",
+            "full_text",
+            "model_output",
+            "prompt",
+            "raw_content",
+            "transcript",
+        }
+
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if str(key).casefold() in forbidden:
+                        raise ValueError(f"state_update contains non-compact field: {key}")
+                    walk(child)
+            elif isinstance(value, list):
+                for child in value:
+                    walk(child)
+
+        walk(self.model_dump(mode="python"))
+        return self
+
 
 class FinalAction(_ActionModel):
     type: Literal["final"]
     output: dict[str, Any]
+    state_update: StateUpdate | None = None
 
     @field_validator("output")
     @classmethod
@@ -52,6 +149,7 @@ class ToolCallAction(_ActionModel):
     type: Literal["tool_call"]
     tool_name: str
     arguments: dict[str, Any]
+    state_update: StateUpdate | None = None
 
     @field_validator("tool_name", mode="before")
     @classmethod
@@ -77,6 +175,7 @@ class DelegateAction(_ActionModel):
     input_artifact_refs: tuple[str, ...] = ()
     role_version: str | None = None
     research_task: ResearchTask | None = None
+    state_update: StateUpdate | None = None
 
     @model_validator(mode="after")
     def versioned_profile(self):
@@ -120,6 +219,7 @@ class RequestApprovalAction(_ActionModel):
     tool_name: str
     arguments: dict[str, Any]
     reason: str
+    state_update: StateUpdate | None = None
 
     @field_validator("tool_name", "reason", mode="before")
     @classmethod
@@ -143,7 +243,7 @@ def _nonblank_text(value: object, *, field_name: str) -> object:
 
 
 AgentAction = Annotated[
-    Union[FinalAction, ToolCallAction, DelegateAction, RequestApprovalAction],
+    FinalAction | ToolCallAction | DelegateAction | RequestApprovalAction,
     Field(discriminator="type"),
 ]
 
@@ -174,9 +274,12 @@ StopReason = Literal[
 __all__ = [
     "ALLOWED_ACTION_NAMES",
     "AgentAction",
+    "ArticleStateUpdate",
     "DelegateAction",
+    "EvidenceAddition",
     "FinalAction",
     "RequestApprovalAction",
+    "StateUpdate",
     "StopReason",
     "ToolCallAction",
 ]

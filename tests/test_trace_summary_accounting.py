@@ -109,6 +109,41 @@ def test_legacy_inventory_preserves_explicit_zero_and_missing_enabled_count():
     assert result["enabled_news_source_count"] is None
 
 
+def test_tool_summary_counts_failed_tool_results_even_when_call_record_is_ok():
+    view = ChatWorkbenchService._build_observability_view({}, [
+        {
+            "step_type": "tool_result",
+            "status": "done",
+            "tool_calls": [{
+                "call_id": "tool-ok",
+                "tool_name": "article.list",
+                "status": "ok",
+                "allowed": True,
+                "policy_decision": "allow",
+            }],
+        },
+        {
+            "step_type": "tool_result",
+            "status": "failed",
+            "tool_calls": [{
+                "call_id": "tool-failed",
+                "tool_name": "article.read",
+                "status": "ok",
+                "allowed": True,
+                "policy_decision": "allow",
+            }],
+            "metadata": {"tool_call_id": "tool-failed"},
+            "output_payload": {"observation": {
+                "category": "tool_failed",
+                "tool_name": "article.read",
+            }},
+        },
+    ])
+
+    assert view["tool_summary"]["total_calls"] == 2
+    assert view["tool_summary"]["failed_calls"] == 1
+
+
 @pytest.mark.parametrize("case,logical,attempts,events", [
     ("SD03", 4, 4, 66), ("SD04", 6, 7, 57),
 ])

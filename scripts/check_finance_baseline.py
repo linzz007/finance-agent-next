@@ -51,9 +51,15 @@ def main() -> int:
     check("corpus_is_inside_new_project", corpus.is_relative_to(ROOT))
     workspace = company_dir("finance_observer")
     check("workspace_is_inside_new_project", workspace.is_relative_to(ROOT))
-    check("only_finance_workspace_copied", {
-        p.name for p in workspace.parent.iterdir() if p.is_dir()
-    } == {"finance_observer"})
+    # Test runs may leave isolated SQLite files under data/companies. They are
+    # not product workspaces unless the directory has the profile marker that
+    # create_company_workspace writes.
+    workspace_names = {
+        p.name
+        for p in workspace.parent.iterdir()
+        if p.is_dir() and (p / "company.yaml").is_file()
+    }
+    check("only_finance_workspace_copied", workspace_names == {"finance_observer"})
     check("profile_and_wiki_present", (workspace / "company.yaml").is_file()
           and any((workspace / "wiki").rglob("*.md")))
     check("holdings_and_policy_present", all(
