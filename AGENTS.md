@@ -6,6 +6,16 @@ The internal Python namespace `policy_impact` is retained for compatibility.
 
 ## Read First
 
+The 2026-10-28 scheduling Trace re-audit independently checks four historical
+Runs against read-only SQLite, 1,741 events and 962 artifact hashes/lengths.
+No paid calls or historical mutations; current focused regression: 61 passed.
+Recursion, real overlap, wait recovery and full reads are established, but
+SCH-02 final revision remains unreviewed and SCH-03 missed off then failed a
+domain finding-ID check. Required-final automatic re-review and recoverable
+domain diagnostics are proposals, not implemented by this audit. Three Prompt
+clarifications are current but not live-validated. See docs/acceptance/
+h2-agent-scheduling-trace-reaudit-20261028.md; preserve original case verdicts.
+
 110 redesigns the H2 Workbench with the approved warm editorial research UI.
 Research, test archives, reports, source artifacts and execution traces share
 the existing API; no model/budget/queue/database behavior is changed. Keep real
