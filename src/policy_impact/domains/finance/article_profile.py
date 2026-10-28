@@ -18,6 +18,11 @@ def _profile_path(root: Path | None, filename: str) -> Path:
 def load_holdings(root: Path | None = None) -> dict:
     path = _profile_path(root, "current_holdings.md")
     text = path.read_text(encoding="utf-8-sig")
+    return parse_holdings(text, source_path=str(path))
+
+
+def parse_holdings(text: str, *, source_path: str) -> dict:
+    """Validate already-read holdings without a second filesystem observation."""
     blocks = re.findall(r"```json\s*(\{.*?\})\s*```", text, flags=re.S)
     if len(blocks) != 1:
         raise ValueError("current_holdings.md must contain one JSON object")
@@ -37,7 +42,7 @@ def load_holdings(root: Path | None = None) -> dict:
                 or type(item["amount"]) not in (int, float) or item["amount"] < 0):
             raise ValueError("invalid position")
     return {**data, "approximate_total": sum(item["amount"] for item in positions),
-            "source_path": str(path)}
+            "source_path": source_path}
 
 
 def load_research_policy(root: Path | None = None) -> str:

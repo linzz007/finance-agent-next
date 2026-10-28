@@ -101,3 +101,8 @@ Evidence addition 至少包含 `claim_id`、`evidence_ref`、`relation`、`sourc
 
 本协议不规定固定文章数量、固定 subagent 分工、固定审核工具或自动模型切换；这些仍由
 主 Agent 根据 Query 判断，Runtime 只守权限、预算、事实引用和持久化边界。
+
+实现校验补充见 [028](028-finance-state-update-delivery-fixes.md)：终稿可选补丁结构错误时
+保留正文并明确部分交付，恢复后的模型输入包含既有审核/交付状态。离线与真实 Redis、
+真实模型验证的边界分别记录在 [R3 验收](../acceptance/harness-v2-fault-acceptance-r3-20261019.md)，
+不能把旧版入口的 Query 结果当作 H2 状态协议的真实模型验收。

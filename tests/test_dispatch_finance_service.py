@@ -19,6 +19,7 @@ TOOLS = ["agent.spawn", "agent.wait", "agent.status", "result.get"]
 @pytest.fixture
 def service(tmp_path: Path):
     config = SchedulerConfig(
+        budget_policy="hierarchical",
         stream_name="finance-agent-next:fixture:finance-service",
         publish_attempts=2,
         lease_ms=60000,
@@ -117,6 +118,21 @@ def service(tmp_path: Path):
         child_executor=child,
         worker_id="finance-service-worker",
     ), calls
+
+
+@pytest.mark.parametrize("parameters,expected", [
+    ({}, True),
+    ({"input_tokens": 1, "safety_tokens": 0}, False),
+    ({"context_tokens": 512, "max_tokens": 256, "safety_tokens": 256}, False),
+    ({"unexpected_parameter": True}, False),
+])
+def test_service_worker_uses_attempt_model_capacity_for_optional_result_bodies(service, parameters, expected):
+    app, _ = service
+    assert callable(app.worker.context_accepts)
+    data = {"model": {"parameters": parameters}, "observations": ["source " * 1000]}
+    assert app.worker.context_accepts(data) is expected
+    with app.repository.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_model_calls").fetchone()[0] == 0
 
 
 def test_service_creates_explicit_run_and_preserves_partial_finance_state(service):

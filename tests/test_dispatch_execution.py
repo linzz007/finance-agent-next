@@ -5,6 +5,7 @@ import json
 import sqlite3
 from contextlib import suppress
 from dataclasses import asdict
+from pathlib import Path
 from uuid import uuid4
 
 import fakeredis
@@ -12,12 +13,20 @@ import httpx
 import pytest
 
 from policy_impact.dispatch import CallerContext, DispatchError, DispatchRepository, SchedulerConfig
-from policy_impact.dispatch.contracts import Cancel, CheckpointState, ModelPolicySet, Submission
+from policy_impact.dispatch.contracts import (
+    Cancel,
+    CheckpointState,
+    ModelPolicySet,
+    Spawn,
+    Submission,
+    Wait,
+)
 from policy_impact.dispatch.execution import ExecutionCapabilities
 from policy_impact.dispatch.model_execution import (
     GatewayModelAdapter,
     ModelRequest,
     profiles_from_registry,
+    public_validation_errors,
 )
 from policy_impact.dispatch.transport import Dispatcher, RedisStreams
 from policy_impact.dispatch.worker import Worker, WorkInput
@@ -123,14 +132,15 @@ class Chunks(httpx.AsyncByteStream):
         self.closed = True
 
 
-def sse(protocol, *, complete=True, content=ACTION):
+def sse(protocol, *, complete=True, content=ACTION, public_text=None):
+    text_content = json.dumps(content) if public_text is None else public_text
     if protocol == "openai-compatible":
         events = [
             {
                 "id": "provider-response",
                 "choices": [{"delta": {"reasoning_content": "private reasoning must not escape"}}],
             },
-            {"id": "provider-response", "choices": [{"delta": {"content": json.dumps(content)}}]},
+            {"id": "provider-response", "choices": [{"delta": {"content": text_content}}]},
             {
                 "id": "provider-response",
                 "choices": [{"delta": {}, "finish_reason": "stop"}],
@@ -156,12 +166,14 @@ def sse(protocol, *, complete=True, content=ACTION):
             "output_index": 1,
             "content_index": 0,
             "item_id": "msg",
-            "delta": json.dumps(content),
+            "delta": text_content,
         },
     ]
     if complete:
+        terminal = responses(content)
+        terminal["output"][1]["content"][0]["text"] = text_content
         events.append(
-            {"type": "response.completed", "sequence_number": 3, "response": responses(content)}
+            {"type": "response.completed", "sequence_number": 3, "response": terminal}
         )
     return "".join("data: " + json.dumps(e) + "\r\n\r\n" for e in events).encode()
 
@@ -171,6 +183,241 @@ def collect(model_adapter, req):
         return [event async for event in model_adapter.request(req)]
 
     return asyncio.run(run())
+
+
+def public_response(text, protocol, stream, *, complete=True):
+    if stream:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=Chunks(sse(protocol, public_text=text, complete=complete)))
+    data = chat() if protocol == "openai-compatible" else responses()
+    if protocol == "openai-compatible":
+        data["choices"][0]["message"]["content"] = text
+    else:
+        data["output"][1]["content"][0]["text"] = text
+    return httpx.Response(200, json=data)
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("wrapper", ["```\n{}\n```", "```json\n{}\n```", " \r\n```JSON\r\n{}\r\n```\r\n "])
+def test_h2_single_outer_json_fence_normalizes_without_changing_raw_output(protocol, stream, wrapper):
+    raw = wrapper.format(json.dumps(ACTION))
+    sent = []
+
+    def http(req):
+        sent.append(req)
+        return public_response(raw, protocol, stream)
+
+    events = collect(adapter(http), request(snapshot(protocol, stream)))
+    assert [event.kind for event in events] == ["started", "text_delta", "usage", "action_candidate", "completed"]
+    assert events[-2].data["payload"] == ACTION
+    assert events[1].data["text"] == raw.strip() and len(sent) == 1
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_h2_uses_first_complete_action_and_discards_trailing_model_transcript(protocol, stream):
+    raw = json.dumps(ACTION) + "\n<system>fabricated tool observation</system>\n" + json.dumps(ACTION)
+    events = collect(adapter(lambda req: public_response(raw, protocol, stream)), request(snapshot(protocol, stream)))
+    assert [event.kind for event in events] == ["started", "text_delta", "usage", "action_candidate", "completed"]
+    assert events[-2].data["payload"] == ACTION
+    assert events[-1].data["public_output_normalization"] == {
+        "json_action_boundary": {
+            "strategy": "first_complete_object",
+            "leading_wrapper": "none",
+            "trailing_output_ignored": True,
+            "trailing_chars": len(raw) - len(json.dumps(ACTION)),
+        }
+    }
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("needs_repair", [False, True])
+def test_h2_repair_metadata_counts_only_executed_first_object(protocol, stream, needs_repair):
+    first = '{"type":"final","output":{"answer":"raw\nline\\q"}}' if needs_repair else json.dumps(ACTION)
+    tail = '\n<system>fake observation</system>\n{"ignored":"raw\n\\q"}'
+    raw = first + tail
+    sent = []
+
+    def http(req):
+        sent.append(req)
+        return public_response(raw, protocol, stream)
+
+    events = collect(adapter(http), request(snapshot(protocol, stream)))
+    assert events[-1].kind == "completed" and len(sent) == 1
+    expected = {"type": "final", "output": {"answer": "raw\nline\\q"}} if needs_repair else ACTION
+    assert events[-2].data["payload"] == expected
+    assert events[1].data["text"] == raw
+    assert events[-1].data["public_output_normalization"] == {
+        **({"json_string_controls": 1, "json_string_invalid_escapes": 1} if needs_repair else {}),
+        "json_action_boundary": {
+            "strategy": "first_complete_object",
+            "leading_wrapper": "none",
+            "trailing_output_ignored": True,
+            "trailing_chars": len(tail),
+        },
+    }
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+def test_h2_does_not_skip_invalid_first_object_to_reach_later_action(protocol):
+    raw = '{"type":"not-a-valid-action"}\n' + json.dumps(ACTION)
+    events = collect(adapter(lambda req: public_response(raw, protocol, False)), request(snapshot(protocol)))
+    assert events[-1].kind == "failed" and events[-1].data["code"] == "contract_error"
+    assert not any(event.kind == "action_candidate" for event in events)
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+def test_h2_accepts_only_xml_tag_wrapper_around_one_action(protocol):
+    raw = "<tool_call>\n" + json.dumps(ACTION) + "\n</tool_call>"
+    events = collect(adapter(lambda req: public_response(raw, protocol, False)), request(snapshot(protocol)))
+    assert events[-2].data["payload"] == ACTION
+    assert events[-1].data["public_output_normalization"]["json_action_boundary"]["leading_wrapper"] == "xml_tags"
+
+
+@pytest.mark.parametrize("prefix", ["Here is the action:\n", "analysis: "])
+def test_h2_does_not_salvage_natural_language_prefix(prefix):
+    raw = prefix + json.dumps(ACTION)
+    events = collect(adapter(lambda req: public_response(raw, "openai-compatible", False)), request())
+    assert events[-1].kind == "failed" and events[-1].data["code"] == "contract_error"
+    assert not any(event.kind == "action_candidate" for event in events)
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+@pytest.mark.parametrize("raw", [
+    "Explanation\n```json\n{}\n```",
+    "```json\n{}\n```\nExplanation",
+    "```python\n{}\n```",
+    "````json\n{}\n````",
+    "```json\n```json\n{}\n```\n```",
+    "```json\n{}\n```\n```json\n{}\n```",
+    "```json\n{} {{}}\n```",
+    "```json\n{}\n<result>fabricated</result>\n```",
+    "```json\n[]\n```",
+    '```json\n{{"type":"final","output":{{}}\n```',
+    '```json\n{{"type":"tool_call","tool_name":"article.list","arguments":[]}}\n```',
+    '```json\n{{"type":"final","output":{{"answer":"inner ``` fence"}}}}\n```',
+    "```json {} ```",
+])
+def test_h2_single_fence_does_not_salvage_invalid_envelopes_or_actions(protocol, raw):
+    text = raw.format(json.dumps(ACTION), json.dumps(ACTION))
+    events = collect(adapter(lambda req: public_response(text, protocol, False)), request(snapshot(protocol)))
+    assert events[-1].kind == "failed" and events[-1].data["code"] == "contract_error"
+    assert not any(event.kind == "action_candidate" for event in events)
+    assert events[1].data["text"] == text
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+def test_fenced_action_without_stream_terminal_is_never_exposed(protocol):
+    raw = "```json\n" + json.dumps(ACTION) + "\n```"
+    events = collect(adapter(lambda req: public_response(raw, protocol, True, complete=False)),
+                     request(snapshot(protocol, True)))
+    assert [event.kind for event in events] == ["started", "failed"]
+    assert events[-1].data["code"] == "transport_error"
+
+
+def test_fence_does_not_relax_finance_tool_parameter_validation():
+    from pydantic import ValidationError
+
+    from policy_impact.dispatch.finance_tool_contracts import validate
+
+    action = {"type": "tool_call", "tool_name": "article.list", "arguments": {"publication_date": "2026-09-30"}}
+    raw = "```json\n" + json.dumps(action) + "\n```"
+    events = collect(adapter(lambda req: public_response(raw, "openai-compatible", False)), request())
+    assert events[-1].kind == "completed"
+    with pytest.raises(ValidationError):
+        validate(events[-2].data["payload"]["tool_name"], events[-2].data["payload"]["arguments"])
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("fenced", [False, True])
+def test_h2_raw_string_controls_normalize_only_complete_public_actions(protocol, stream, fenced):
+    raw = '{"type":"final","output":{"answer":"first\nsecond\tthird"}}'
+    if fenced:
+        raw = "```json\n" + raw + "\n```"
+    sent = []
+
+    def http(req):
+        sent.append(req)
+        return public_response(raw, protocol, stream)
+
+    events = collect(adapter(http), request(snapshot(protocol, stream)))
+    assert [event.kind for event in events] == ["started", "text_delta", "usage", "action_candidate", "completed"]
+    assert events[1].data["text"] == raw
+    assert events[-2].data["payload"] == {"type": "final", "output": {"answer": "first\nsecond\tthird"}}
+    assert events[-1].data["public_output_normalization"] == {"json_string_controls": 2}
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_h2_invalid_string_escape_is_repaired_only_inside_complete_action(protocol, stream):
+    raw = '{"type":"final","output":{"answer":"C:\\q"}}'
+    events = collect(
+        adapter(lambda req: public_response(raw, protocol, stream)),
+        request(snapshot(protocol, stream)),
+    )
+    assert events[-2].data["payload"] == {"type": "final", "output": {"answer": r"C:\q"}}
+    assert events[-1].data["public_output_normalization"] == {
+        "json_string_invalid_escapes": 1,
+    }
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+def test_controls_do_not_make_truncated_stream_executable(protocol):
+    raw = '{"type":"final","output":{"answer":"raw\nline"}}'
+    events = collect(adapter(lambda req: public_response(raw, protocol, True, complete=False)),
+                     request(snapshot(protocol, True)))
+    assert [event.kind for event in events] == ["started", "failed"]
+    assert "public_output_normalization" not in events[-1].data
+
+
+@pytest.mark.parametrize("raw", [
+    '{"type":"final","output":{"answer":"raw\nline"}',
+    '{"type":"final","output":{"answer":"raw\nline"},"invented":true}',
+    '{"schema_version":"finance.h2.anchor_patch.v1","anchors":[],"note":"raw\nline"}',
+    '{"type":"tool_call","tool_name":"article.read","arguments":[],"note":"raw\nline"}',
+])
+def test_control_normalization_does_not_relax_action_or_envelope_validation(raw):
+    events = collect(adapter(lambda req: public_response(raw, "openai-compatible", False)), request())
+    assert events[-1].kind == "failed" and events[-1].data["code"] == "contract_error"
+    expected = {"json_string_controls": 1}
+    if "\\q" in raw:
+        expected["json_string_invalid_escapes"] = 1
+    assert events[-1].data["public_output_normalization"] == expected
+    assert not any(event.kind == "action_candidate" for event in events)
+    assert events[1].data["text"] == raw
+
+
+def test_string_controls_not_normalized_for_other_schemas():
+    from dataclasses import replace
+
+    raw = '{"type":"final","output":{"answer":"raw\nline"}}'
+    req = replace(request(), schema_name="general_chat_agent_loop.v1")
+    events = collect(adapter(lambda req: public_response(raw, "openai-compatible", False)), req)
+    assert events[-1].kind == "failed" and events[-1].data["code"] == "contract_error"
+    assert "public_output_normalization" not in events[-1].data
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+@pytest.mark.parametrize("literal_control", [False, True])
+def test_control_normalization_does_not_widen_existing_dsml_compatibility(protocol, literal_control):
+    arguments = '{"note":"raw\nline"}' if literal_control else '{"note":"escaped\\nline"}'
+    raw = (
+        '<||DSML|| calls><||DSML|| invoke name="tool_call">'
+        '<||DSML|| parameter name="tool_name" string="true">article.list</||DSML|| parameter>'
+        '<||DSML|| parameter name="arguments" string="false">' + arguments + '</||DSML|| parameter>'
+        '</||DSML|| invoke></||DSML|| calls>'
+    )
+    events = collect(adapter(lambda req: public_response(raw, protocol, False)), request(snapshot(protocol)))
+    assert events[-1].kind == ("failed" if literal_control else "completed")
+    assert "public_output_normalization" not in events[-1].data
+    if literal_control:
+        assert events[-1].data["code"] == "contract_error"
+        assert not any(event.kind == "action_candidate" for event in events)
+    assert events[1].data["text"] == raw
 
 
 @pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
@@ -208,6 +455,53 @@ def test_one_request_reuses_wire_contract_and_excludes_private_channels(protocol
         assert sent[0].url.path == "/v1/chat/completions"
     assert SECRET not in str(events)
     assert "private reasoning" not in str(events)
+
+
+@pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_invalid_action_emits_exact_bounded_field_diagnostic(protocol, stream):
+    payload = {
+        "type": "tool_call", "tool_name": "agent.wait",
+        "arguments": {"task_ids": ["task-child"], "mode": "all", "timeout_ms": 60000},
+        "next_action_key": SECRET,
+    }
+    sent = []
+
+    def http(req):
+        sent.append(req)
+        if stream:
+            return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                  stream=Chunks(sse(protocol, content=payload)))
+        return httpx.Response(200, json=chat(payload) if protocol == "openai-compatible" else responses(payload))
+
+    events = collect(adapter(http), request(snapshot(protocol, stream)))
+    assert len(sent) == 1
+    assert [event.kind for event in events] == ["started", "text_delta", "usage", "failed"]
+    failed = events[-1].data
+    assert failed["code"] == "contract_error" and failed["physical_status"] == "succeeded"
+    assert failed["validation_stage"] == "action"
+    assert failed["validation_errors"] == [{
+        "loc": ["tool_call", "next_action_key"], "type": "extra_forbidden",
+        "msg": "Extra inputs are not permitted",
+    }]
+    assert SECRET not in str(events) and "private reasoning" not in str(events)
+
+
+def test_public_validation_diagnostics_are_allowlisted_redacted_and_bounded():
+    error = {
+        "loc": ["tool_call", SECRET, 3] + ["x" * 300] * 20,
+        "type": "custom_" + "x" * 500, "msg": SECRET + "x" * 1000,
+        "input": "private input", "ctx": {"error": "private context"}, "url": "private URL",
+    }
+    errors = public_validation_errors([error] * 40, secret=SECRET)
+    assert len(errors) == 12
+    assert all(set(item) == {"loc", "type", "msg"} for item in errors)
+    assert all(len(item["loc"]) <= 12 and len(item["type"]) <= 80 and len(item["msg"]) <= 320 for item in errors)
+    assert all(len(part) <= 160 for item in errors for part in item["loc"] if isinstance(part, str))
+    assert errors[0]["loc"][:3] == ["tool_call", "[REDACTED]", 3]
+    assert SECRET not in str(errors) and "private" not in str(errors)
+    assert public_validation_errors(None) == []
+    assert public_validation_errors([None, {"loc": {"invalid": True}}]) == []
 
 
 @pytest.mark.parametrize("protocol", ["openai-compatible", "openai-responses"])
@@ -380,6 +674,7 @@ def test_explicit_adapter_cancel_is_local_and_has_no_candidate():
 @pytest.fixture
 def runtime(tmp_path):
     config = SchedulerConfig(
+        budget_policy="hierarchical",
         stream_name="h2:execution:fixture", run_concurrency=1, worker_concurrency=1, max_attempts=2
     )
     model = snapshot()
@@ -472,6 +767,215 @@ def test_success_has_one_physical_charge_and_scoped_public_output(runtime):
     ref = result.metadata["output_ref"]
     assert json.loads(repo.read_input(lease.caller(), ref)) == ACTION
     assert "lease_token" not in json.dumps(asdict(work))
+    expected_usage = {"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70}
+    assert json.loads(rows[0]["usage_json"]) == expected_usage
+    exported = repo.export_run_records(lease.run_id)
+    for name in ("model_calls", "trace"):
+        records = [json.loads(line) for line in Path(exported["files"][name]).read_text(encoding="utf-8").splitlines()]
+        call = next(row for row in records if row.get("call_id") == rows[0]["call_id"])
+        assert call["usage"] == expected_usage
+        assert call["status"] == "succeeded" and call["error_code"] is None
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_normalization_is_audited_with_raw_output_and_one_charge(runtime, invalid):
+    repo, _, _, _ = runtime
+    lease, work = claimed(runtime)
+    raw = '{"type":"final","output":{"answer":"raw\nline"}' + (',"extra":true}' if invalid else '}')
+    sent = []
+
+    def http(req):
+        sent.append(req)
+        return public_response(raw, "openai-compatible", False)
+
+    session = ExecutionCapabilities(repo, lease, work, model_adapter=adapter(http))
+    if invalid:
+        with pytest.raises(DispatchError, match="contract_error") as caught:
+            asyncio.run(session.complete([{"role": "user", "content": "q"}], "agent_action.v1"))
+        output_ref = caught.value.details["output_ref"]
+    else:
+        result = asyncio.run(session.complete([{"role": "user", "content": "q"}], "agent_action.v1"))
+        assert result.metadata["public_output_normalization"] == {"json_string_controls": 1}
+        assert result.payload["output"]["answer"] == "raw\nline"
+        output_ref = result.metadata["output_ref"]
+    assert repo.read_input(lease.caller(), output_ref).decode() == raw
+    assert len(sent) == len(ledger(repo)) == 1
+    assert ledger(repo)[0]["status"] == "succeeded"
+    assert ledger(repo)[0]["error_code"] == ("contract_error" if invalid else None)
+    with repo.db.connection() as c:
+        events = c.execute("SELECT payload_json FROM h2_events WHERE event_type='model.call_finished'").fetchall()
+        assert c.execute("SELECT sum(delta_calls) FROM h2_budget_entries WHERE kind='charge'").fetchone()[0] == -1
+    assert len(events) == 1
+    event = json.loads(events[0][0])
+    assert event["output_ref"] == output_ref
+    assert event["public_output_normalization"] == {"json_string_controls": 1}
+
+
+@pytest.mark.parametrize("value", [None, True, False, "1", -1, 0, 1.5, 1_000_001, {"secret": SECRET}])
+def test_repository_ignores_invalid_normalization_metadata(runtime, value):
+    repo, _, _, _ = runtime
+    lease, _ = claimed(runtime)
+    call_id = "call_" + uuid4().hex
+    repo.reserve_call(lease, call_id)
+    repo.call_started(lease, call_id)
+    repo.call_finished(lease, call_id, status="succeeded", public_output_normalization={
+        "json_string_controls": value, "json_string_invalid_escapes": 0, "secret": SECRET,
+    })
+    with repo.db.connection() as c:
+        event = json.loads(c.execute("SELECT payload_json FROM h2_events WHERE event_type='model.call_finished'").fetchone()[0])
+    assert "public_output_normalization" not in event and SECRET not in str(event)
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.invalid/news?page=2",
+    "https://example.invalid/news?section=markets&date=2026-10-20",
+    "https://example.invalid/news?cursor=next-page",
+])
+def test_secret_scan_allows_ordinary_public_url_query_parameters(url):
+    DispatchRepository._no_secrets({"source_url": url, "text": "public page"})
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.invalid/news?api_key=public-looking-value",
+    "https://example.invalid/news?access_token=public-looking-value",
+    "https://example.invalid/news?client-secret=public-looking-value",
+    "https://user:password@example.invalid/news?page=2",
+])
+def test_secret_scan_still_rejects_credential_url_parameters(url):
+    with pytest.raises(ValueError, match="credential-bearing"):
+        DispatchRepository._no_secrets({"source_url": url})
+
+
+def test_capability_and_repository_copy_only_known_normalization_count(runtime):
+    from policy_impact.dispatch.model_execution import ModelEvent
+
+    repo, _, _, _ = runtime
+    lease, work = claimed(runtime)
+
+    class CountAdapter:
+        settings = staticmethod(GatewayModelAdapter.settings)
+
+        async def request(self, req):
+            yield ModelEvent(req.call_id, 1, "started")
+            yield ModelEvent(req.call_id, 2, "text_delta", {"text": json.dumps(ACTION)})
+            yield ModelEvent(req.call_id, 3, "action_candidate", {"payload": ACTION})
+            yield ModelEvent(req.call_id, 4, "completed", {
+                "public_output_normalization": {
+                    "json_string_controls": 7, "json_string_invalid_escapes": 2,
+                    "secret": SECRET,
+                },
+                "private_reasoning": SECRET,
+            })
+
+    session = ExecutionCapabilities(repo, lease, work, model_adapter=CountAdapter())
+    result = asyncio.run(session.complete([{"role": "user", "content": "q"}], "agent_action.v1"))
+    assert result.metadata["public_output_normalization"] == {
+        "json_string_controls": 7, "json_string_invalid_escapes": 2,
+    }
+    assert SECRET not in str(result.metadata)
+    with repo.db.connection() as c:
+        event = json.loads(c.execute("SELECT payload_json FROM h2_events WHERE event_type='model.call_finished'").fetchone()[0])
+        assert event["public_output_normalization"] == {
+            "json_string_controls": 7, "json_string_invalid_escapes": 2,
+        }
+    assert SECRET not in str(event)
+
+
+def test_normalized_research_prose_still_uses_immutable_anchor_correction(runtime):
+    from policy_impact.dispatch.finance_agent import FinanceH2Domain
+    from policy_impact.dispatch.finance_anchor_repair import ResearchAnchorRepair
+    from policy_impact.runtime.research_contracts import ResearchResult
+
+    repo, _, _, _ = runtime
+    lease, work = claimed(runtime)
+    output = {
+        "schema_version": "finance.research_result.v1", "content": "Claim.\nStill conditional.",
+        "evidence_links": [{"text": "Not verbatim", "evidence_refs": ["art_fixture"]}],
+        "material_disposition": [], "gaps": [], "limitations": [],
+    }
+    original = {"type": "final", "output": output}
+    raw = json.dumps(original).replace("\\n", "\n")
+    sent = []
+
+    def http(req):
+        sent.append(json.loads(req.content))
+        if len(sent) == 1:
+            return public_response(raw, "openai-compatible", False)
+        feedback = json.loads(sent[-1]["messages"][-1]["content"])
+        assert feedback["input_policy"] == "finance.h2.immutable_anchor_correction.v1"
+        return httpx.Response(200, json=chat({"type": "final", "output": {
+            "schema_version": "finance.h2.anchor_patch.v1", "anchors": [{"link_index": 0, "text": "Claim."}],
+        }}))
+
+    session = ExecutionCapabilities(repo, lease, work, model_adapter=adapter(http))
+    response, repair_ref = asyncio.run(FinanceH2Domain._decide(
+        [{"role": "user", "content": "fixture task"}], session,
+        final_output_model=ResearchResult, final_repair_factory=ResearchAnchorRepair.prepare,
+    ))
+    expected = {**output, "evidence_links": [{"text": "Claim.", "evidence_refs": ["art_fixture"]}]}
+    assert response.payload == {"type": "final", "output": expected}
+    assert len(sent) == len(ledger(repo)) == 2 and repair_ref
+    with repo.db.connection() as c:
+        events = [json.loads(row[0]) for row in c.execute(
+            "SELECT payload_json FROM h2_events WHERE event_type='model.call_finished' ORDER BY event_id",
+        )]
+    assert events[0]["public_output_normalization"] == {"json_string_controls": 1}
+    assert repo.read_input(lease.caller(), events[0]["output_ref"]).decode() == raw
+    assert "public_output_normalization" not in events[1]
+
+
+def test_normalization_does_not_grant_scheduler_tool_permissions(runtime):
+    repo, _, _, _ = runtime
+    lease, work = claimed(runtime)
+    raw = '{"type":"tool_call","tool_name":"not.granted","arguments":{"note":"raw\nline"}}'
+    session = ExecutionCapabilities(repo, lease, work, model_adapter=adapter(
+        lambda req: public_response(raw, "openai-compatible", False),
+    ))
+
+    async def run():
+        result = await session.complete([{"role": "user", "content": "q"}], "agent_action.v1")
+        with pytest.raises(DispatchError, match="forbidden"):
+            await session.tool(result.payload["tool_name"], result.payload["arguments"])
+
+    asyncio.run(run())
+    assert len(ledger(repo)) == 1
+
+
+def test_normalization_does_not_relax_business_tool_parameters():
+    from pydantic import ValidationError
+
+    from policy_impact.dispatch.finance_tool_contracts import validate
+
+    raw = '{"type":"tool_call","tool_name":"article.list","arguments":{"publication_date":"raw\nline"}}'
+    events = collect(adapter(lambda req: public_response(raw, "openai-compatible", False)), request())
+    assert events[-1].kind == "completed"
+    action = events[-2].data["payload"]
+    with pytest.raises(ValidationError):
+        validate(action["tool_name"], action["arguments"])
+
+
+def test_call_finish_normalization_event_is_atomic_with_settlement(runtime, monkeypatch):
+    repo, _, _, _ = runtime
+    lease, _ = claimed(runtime)
+    call_id = "call_" + uuid4().hex
+    repo.reserve_call(lease, call_id)
+    repo.call_started(lease, call_id)
+    event = repo._event
+
+    def fail(c, task, name, payload):
+        if name == "model.call_finished":
+            raise sqlite3.OperationalError("synthetic event persistence failure")
+        return event(c, task, name, payload)
+
+    monkeypatch.setattr(repo, "_event", fail)
+    with pytest.raises(sqlite3.OperationalError):
+        repo.call_finished(lease, call_id, status="succeeded", public_output_normalization={
+            "json_string_controls": 1,
+        })
+    assert ledger(repo)[0]["status"] == "started"
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_events WHERE event_type='model.call_finished'").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM h2_budget_entries WHERE kind='refund'").fetchone()[0] == 0
 
 
 def test_invalid_action_is_completed_physical_request_with_contract_failure(runtime):
@@ -493,6 +997,185 @@ def test_invalid_action_is_completed_physical_request_with_contract_failure(runt
         ).fetchone()[0]
     ref = json.loads(event)["output_ref"]
     assert ref and SECRET not in repo.read_input(lease.caller(), ref).decode()
+    expected_usage = json.loads(row["usage_json"])
+    assert expected_usage == {"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70}
+    exported = repo.export_run_records(lease.run_id)
+    for name in ("model_calls", "trace"):
+        records = [json.loads(line) for line in Path(exported["files"][name]).read_text(encoding="utf-8").splitlines()]
+        call = next(item for item in records if item.get("call_id") == row["call_id"])
+        assert call["usage"] == expected_usage
+        assert call["status"] == "succeeded" and call["error_code"] == "contract_error"
+
+
+def test_capability_preserves_only_allowed_action_failure_details(runtime):
+    from policy_impact.dispatch.model_execution import ModelEvent
+
+    repo, _, _, _ = runtime
+    lease, work = claimed(runtime)
+
+    class DiagnosticAdapter:
+        settings = staticmethod(GatewayModelAdapter.settings)
+
+        async def request(self, req):
+            yield ModelEvent(req.call_id, 1, "started")
+            yield ModelEvent(req.call_id, 2, "text_delta", {"text": '{"type":"tool_call"}'})
+            yield ModelEvent(req.call_id, 3, "failed", {
+                "code": "contract_error", "physical_status": "succeeded",
+                "validation_stage": "action", "validation_errors": [{
+                    "loc": ["tool_call", "next_action_key"], "type": "extra_forbidden",
+                    "msg": "Extra inputs are not permitted", "input": SECRET, "ctx": {"error": SECRET},
+                }],
+                "private_reasoning": "not public", "lease_token": SECRET,
+            })
+
+    session = ExecutionCapabilities(repo, lease, work, model_adapter=DiagnosticAdapter())
+    with pytest.raises(DispatchError) as caught:
+        asyncio.run(session.complete([{"role": "user", "content": "question"}], "agent_action.v1"))
+    details = caught.value.details
+    assert set(details) == {"call_id", "output_ref", "validation_stage", "validation_errors"}
+    assert details["validation_stage"] == "action"
+    assert details["validation_errors"] == [{
+        "loc": ["tool_call", "next_action_key"], "type": "extra_forbidden",
+        "msg": "Extra inputs are not permitted",
+    }]
+    assert SECRET not in json.dumps(details)
+    assert ledger(repo)[0]["error_code"] == "contract_error"
+    assert ledger(repo)[0]["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("corrected", [True, False])
+def test_root_wait_correction_receives_actual_field_error_without_third_request(runtime, corrected):
+    from policy_impact.dispatch.finance_agent import FinanceH2Domain
+
+    repo, _, _, _ = runtime
+    lease, work = claimed(runtime)
+    valid = {
+        "type": "tool_call", "tool_name": "agent.wait",
+        "arguments": {"task_ids": ["task-child"], "mode": "all", "timeout_ms": 60000},
+    }
+    invalid = {**valid, "next_action_key": "input-only-key"}
+    sent = []
+
+    def http(req):
+        body = json.loads(req.content)
+        sent.append(body)
+        if len(sent) == 2:
+            feedback = json.loads(body["messages"][-1]["content"])
+            assert feedback["validation_stage"] == "action"
+            assert feedback["validation_errors"] == [{
+                "loc": ["tool_call", "next_action_key"], "type": "extra_forbidden",
+                "msg": "Extra inputs are not permitted",
+            }]
+            assert "failed_public_response" not in feedback
+            assert "input-only-key" not in json.dumps(feedback)
+            assert feedback["input_policy"] == "finance.h2.isolated_correction.v1"
+            assert feedback["action_json_schema"]["discriminator"]["propertyName"] == "type"
+        return httpx.Response(200, json=chat(valid if len(sent) == 2 and corrected else invalid))
+
+    session = ExecutionCapabilities(repo, lease, work, model_adapter=adapter(http))
+    decision = FinanceH2Domain._decide([{"role": "user", "content": "wait for child"}], session)
+    if corrected:
+        response, repair_ref = asyncio.run(decision)
+        assert response.payload["tool_name"] == "agent.wait"
+        assert "next_action_key" not in response.payload
+        repair = json.loads(repo.read_input(lease.caller(), repair_ref))
+        diagnostic = json.loads(repo.read_input(lease.caller(), repair["request_ref"]))
+        assert diagnostic["validation_errors"][0]["loc"] == ["tool_call", "next_action_key"]
+        assert json.loads(repo.read_input(lease.caller(), diagnostic["failed_output_ref"])) == invalid
+    else:
+        with pytest.raises(DispatchError, match="contract_error"):
+            asyncio.run(decision)
+    rows = ledger(repo)
+    assert len(sent) == len(rows) == 2
+    assert all(row["attempt_id"] == lease.attempt_id and row["status"] == "succeeded" for row in rows)
+    assert sum(row["error_code"] == "contract_error" for row in rows) == (1 if corrected else 2)
+    with repo.db.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM h2_waits").fetchone()[0] == 0
+        assert connection.execute("SELECT sum(delta_calls) FROM h2_budget_entries WHERE kind='charge'").fetchone()[0] == -2
+
+
+@pytest.mark.parametrize("corrected", [True, False])
+def test_current_rule_five_corrections_are_individually_charged_in_same_attempt(runtime, corrected):
+    from policy_impact.dispatch.finance_agent import FinanceH2Domain
+    from policy_impact.dispatch.finance_rules import load_rules
+
+    repo, _, _, _ = runtime
+    lease, work = claimed(runtime)
+    work.brief["instruction_rules"] = load_rules().snapshot()
+    invalid = {**ACTION, "next_action_key": "input-only-key"}
+    sent = []
+
+    def http(req):
+        body = json.loads(req.content)
+        sent.append(body)
+        if len(sent) > 1:
+            feedback = json.loads(body["messages"][-1]["content"])
+            assert feedback["correction_attempt"] == len(sent) - 1
+            assert feedback["correction_limit"] == 5
+            assert len(body["messages"]) == 2
+        return httpx.Response(200, json=chat(ACTION if corrected and len(sent) == 6 else invalid))
+
+    session = ExecutionCapabilities(repo, lease, work, model_adapter=adapter(http))
+    decision = FinanceH2Domain._decide([{"role": "user", "content": "Original research task."}], session)
+    if corrected:
+        response, ref = asyncio.run(decision)
+        assert response.payload == ACTION
+    else:
+        with pytest.raises(DispatchError) as caught:
+            asyncio.run(decision)
+        assert caught.value.code == "contract_error" and not caught.value.retryable
+        ref = caught.value.details["action_repair_ref"]
+    summary = json.loads(repo.read_input(lease.caller(), ref))
+    assert summary["limit"] == summary["correction_count"] == 5
+    assert len(summary["request_refs"]) == len(summary["outcome_refs"]) == 5
+    rows = ledger(repo)
+    assert len(sent) == len(rows) == 6
+    assert {row["attempt_id"] for row in rows} == {lease.attempt_id}
+    assert len({row["model_snapshot_ref"] for row in rows}) == 1
+    assert all(row["status"] == "succeeded" for row in rows)
+    assert sum(row["error_code"] == "contract_error" for row in rows) == (5 if corrected else 6)
+    with repo.db.connection() as c:
+        assert c.execute("SELECT sum(delta_calls) FROM h2_budget_entries WHERE kind='charge'").fetchone()[0] == -6
+        outputs = c.execute("SELECT payload_json FROM h2_events WHERE event_type='model.call_finished'").fetchall()
+        assert len(outputs) == 6 and all(json.loads(row[0])["output_ref"] for row in outputs)
+
+
+@pytest.mark.parametrize("research", [False, True])
+@pytest.mark.parametrize("literal_control", [False, True])
+def test_fenced_root_or_child_final_uses_one_charge_and_retains_public_fence(runtime, research, literal_control):
+    from policy_impact.dispatch.finance_agent import FinanceH2Domain
+    from policy_impact.runtime.research_contracts import ResearchResult
+
+    repo, _, _, _ = runtime
+    lease, work = claimed(runtime)
+    output = {
+        "schema_version": "finance.research_result.v1", "content": "No source was supplied.",
+        "evidence_links": [], "material_disposition": [], "gaps": [], "limitations": [],
+    } if research else ACTION["output"]
+    if literal_control:
+        field = "content" if research else "answer"
+        output = {**output, field: output[field] + "\nStill conditional."}
+    raw = "```json\n" + json.dumps({"type": "final", "output": output}) + "\n```"
+    if literal_control:
+        raw = raw.replace("\\n", "\n")
+    sent = []
+
+    def http(req):
+        sent.append(req)
+        return public_response(raw, "openai-compatible", False)
+
+    session = ExecutionCapabilities(repo, lease, work, model_adapter=adapter(http))
+    response, repair = asyncio.run(FinanceH2Domain._decide(
+        [{"role": "user", "content": "fixture task"}], session,
+        final_output_model=ResearchResult if research else None,
+    ))
+    assert response.payload["output"] == output and repair is None
+    assert repo.read_input(lease.caller(), response.metadata["output_ref"]).decode() == raw
+    assert len(sent) == len(ledger(repo)) == 1
+    assert ledger(repo)[0]["error_code"] is None
+    assert response.metadata.get("public_output_normalization") == (
+        {"json_string_controls": 1} if literal_control else None
+    )
 
 
 def test_missing_key_is_not_charged(runtime):
@@ -524,6 +1207,11 @@ def test_cancel_during_reservation_sends_nothing(runtime, monkeypatch):
     with pytest.raises(DispatchError):
         asyncio.run(session.complete([{"role": "user", "content": "q"}], "agent_action.v1"))
     assert calls == []
+    row = ledger(repo)[0]
+    assert row["status"] == "failed" and row["error_code"] == "not_sent"
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_budget_entries WHERE kind='refund'").fetchone()[0] == 1
+        assert c.execute("SELECT sum(delta_calls) FROM h2_budget_entries").fetchone()[0] == 600
 
 
 def test_lease_loss_before_start_refunds_confirmed_unsent_call(runtime, monkeypatch):
@@ -613,6 +1301,204 @@ def test_user_policy_revocation_blocks_next_physical_call_without_fallback(runti
     with pytest.raises(DispatchError, match="forbidden"):
         asyncio.run(session.complete([{"role": "user", "content": "q"}], "agent_action.v1"))
     assert sent == [] and ledger(repo) == []
+
+
+@pytest.mark.parametrize("target", ["root", "child"])
+@pytest.mark.parametrize("boundary", ["before_reserve", "after_reserve", "after_one"])
+def test_worker_model_revocation_preserves_permission_cause_and_unsent_accounting(
+    runtime, monkeypatch, target, boundary
+):
+    repo, root, user, transport = runtime
+    task = root if target == "root" else repo.spawn(
+        user, Spawn.model_validate(spawn_arguments("revocation-child"))
+    )["data"]
+    repo.profiles["other"] = {**repo.profiles["fixture"], "model_id": "other-model"}
+    sent = []
+
+    def revoke():
+        with repo.db.connection() as c:
+            policy_ref = c.execute("SELECT model_policy_ref FROM h2_runs").fetchone()[0]
+        repo.set_model_policy(user, ModelPolicySet(
+            idempotency_key="revoke-original",
+            expected_policy_ref=policy_ref,
+            selected_profile="other",
+            allowed_profiles=["other"],
+        ))
+
+    original_reserve = repo.reserve_call
+
+    def reserve(*args, **kwargs):
+        result = original_reserve(*args, **kwargs)
+        revoke()
+        return result
+
+    if boundary == "after_reserve":
+        monkeypatch.setattr(repo, "reserve_call", reserve)
+
+    def http(req):
+        sent.append(req)
+        return httpx.Response(200, json=chat())
+
+    async def execute(work, session):
+        assert work.task_id == task["task_id"]
+        if boundary == "before_reserve":
+            revoke()
+        for index in range(2):
+            await session.complete([{"role": "user", "content": "q"}], "agent_action.v1")
+            if boundary == "after_one" and index == 0:
+                revoke()
+        pytest.fail("revocation must stop execution before the next physical request")
+
+    async def run():
+        worker = Worker(repo, transport, "worker", executor=execute, model_adapter=adapter(http))
+        Dispatcher(repo, transport).publish_batch()
+        entries = transport.receive(worker.consumer, count=2, block_ms=0)
+        entry_id, payload = next(item for item in entries if item[1]["task_id"] == task["task_id"])
+        assert await worker.process(entry_id, payload)
+        assert repo.delivery_settled(payload)
+        assert entry_id not in {
+            item["message_id"] for item in transport.client.xpending_range(
+                transport.stream, transport.group, min="-", max="+", count=10
+            )
+        }
+
+    asyncio.run(run())
+    status = repo.status(user, [task["task_id"]])["tasks"][0]
+    expected_calls = int(boundary == "after_one")
+    assert len(sent) == expected_calls
+    assert status["status"] == "failed" and status["result_ref"] is None
+    assert len(status["attempts"]) == 1
+    assert status["attempts"][0]["error_code"] == "forbidden"
+    assert all(json.loads(req.content)["model"] == "fixture-model" for req in sent)
+    calls = ledger(repo)
+    assert len(calls) == int(boundary != "before_reserve")
+    if calls:
+        assert calls[0]["status"] == ("failed" if boundary == "after_reserve" else "succeeded")
+        assert calls[0]["error_code"] == ("not_sent" if boundary == "after_reserve" else None)
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_budget_entries WHERE kind='refund'").fetchone()[0] == int(
+            boundary == "after_reserve"
+        )
+        assert c.execute("SELECT sum(delta_calls) FROM h2_budget_entries").fetchone()[0] == 600 - expected_calls
+        event = c.execute(
+            "SELECT payload_json FROM h2_events WHERE event_type='task.failed' AND aggregate_id=?",
+            (task["task_id"],),
+        ).fetchone()
+        assert json.loads(event[0])["error_code"] == "forbidden"
+    if target == "child":
+        waited = repo.wait_snapshot(user, Wait(task_ids=[task["task_id"]], timeout_ms=0))
+        assert waited["condition_met"] is True
+        assert waited["tasks"][0]["attempts"][0]["error_code"] == "forbidden"
+        assert repo.status(user, [root["task_id"]])["tasks"][0]["status"] == "queued"
+
+
+@pytest.mark.parametrize("target", ["root", "child"])
+def test_default_model_change_preserves_original_allowed_attempt_snapshot(runtime, target):
+    repo, root, user, transport = runtime
+    task = root if target == "root" else repo.spawn(
+        user, Spawn.model_validate(spawn_arguments("allowed-original-child"))
+    )["data"]
+    repo.profiles["other"] = {**repo.profiles["fixture"], "model_id": "other-model"}
+    sent = []
+
+    def http(req):
+        sent.append(req)
+        return httpx.Response(200, json=chat())
+
+    async def execute(work, session):
+        with repo.db.connection() as c:
+            policy_ref = c.execute("SELECT model_policy_ref FROM h2_runs").fetchone()[0]
+        repo.set_model_policy(user, ModelPolicySet(
+            idempotency_key="change-default-only",
+            expected_policy_ref=policy_ref,
+            selected_profile="other",
+            allowed_profiles=["fixture", "other"],
+        ))
+        response = await session.complete([{"role": "user", "content": "q"}], "agent_action.v1")
+        return Submission(result_key="final", content=response.payload["output"]["answer"], summary="Result")
+
+    async def run():
+        worker = Worker(repo, transport, "worker", executor=execute, model_adapter=adapter(http))
+        Dispatcher(repo, transport).publish_batch()
+        entry_id, payload = next(
+            item for item in transport.receive(worker.consumer, count=2, block_ms=0)
+            if item[1]["task_id"] == task["task_id"]
+        )
+        assert await worker.process(entry_id, payload)
+
+    asyncio.run(run())
+    status = repo.status(user, [task["task_id"]])["tasks"][0]
+    assert status["status"] == "succeeded"
+    assert len(status["attempts"]) == len(sent) == len(ledger(repo)) == 1
+    assert json.loads(sent[0].content)["model"] == "fixture-model"
+    assert ledger(repo)[0]["model_snapshot_ref"] == status["attempts"][0]["model_snapshot_ref"]
+
+
+@pytest.mark.parametrize("target", ["root", "child"])
+def test_revocation_after_request_start_keeps_original_inflight_charge(runtime, target):
+    repo, root, user, transport = runtime
+    task = root if target == "root" else repo.spawn(
+        user, Spawn.model_validate(spawn_arguments("inflight-child"))
+    )["data"]
+    repo.profiles["other"] = {**repo.profiles["fixture"], "model_id": "other-model"}
+    sent = []
+
+    def http(req):
+        sent.append(req)
+        with repo.db.connection() as c:
+            assert c.execute("SELECT status FROM h2_model_calls").fetchone()[0] == "started"
+            policy_ref = c.execute("SELECT model_policy_ref FROM h2_runs").fetchone()[0]
+        repo.set_model_policy(user, ModelPolicySet(
+            idempotency_key="revoke-inflight",
+            expected_policy_ref=policy_ref,
+            selected_profile="other",
+            allowed_profiles=["other"],
+        ))
+        return httpx.Response(200, json=chat())
+
+    async def execute(work, session):
+        response = await session.complete([{"role": "user", "content": "q"}], "agent_action.v1")
+        return Submission(result_key="final", content=response.payload["output"]["answer"], summary="Result")
+
+    async def run():
+        worker = Worker(repo, transport, "worker", executor=execute, model_adapter=adapter(http))
+        Dispatcher(repo, transport).publish_batch()
+        entry_id, payload = next(
+            item for item in transport.receive(worker.consumer, count=2, block_ms=0)
+            if item[1]["task_id"] == task["task_id"]
+        )
+        assert await worker.process(entry_id, payload)
+
+    asyncio.run(run())
+    status = repo.status(user, [task["task_id"]])["tasks"][0]
+    assert status["status"] == "succeeded"
+    assert len(status["attempts"]) == len(sent) == len(ledger(repo)) == 1
+    assert json.loads(sent[0].content)["model"] == "fixture-model"
+    assert ledger(repo)[0]["status"] == "succeeded"
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_budget_entries WHERE kind='refund'").fetchone()[0] == 0
+        assert c.execute("SELECT sum(delta_calls) FROM h2_budget_entries").fetchone()[0] == 599
+
+
+@pytest.mark.parametrize("retryable", [False, True])
+def test_permission_failure_is_visible_but_never_a_transport_retry(runtime, retryable):
+    repo, root, user, transport = runtime
+
+    async def execute(work):
+        raise DispatchError("forbidden", retryable=retryable)
+
+    async def run():
+        Dispatcher(repo, transport).publish_batch()
+        worker = Worker(repo, transport, "worker", handler=execute)
+        assert await worker.run_once(block_ms=0) == 1
+        assert await worker.run_once(block_ms=0) == 0
+
+    asyncio.run(run())
+    status = repo.status(user, [root["task_id"]])["tasks"][0]
+    assert status["status"] == "failed"
+    assert len(status["attempts"]) == 1
+    assert status["attempts"][0]["error_code"] == "forbidden"
+    assert not ledger(repo)
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -804,6 +1690,62 @@ def test_worker_transport_retry_creates_new_same_model_attempt_not_hidden_call(r
     assert ledger(repo)[0]["status"] == ("unknown" if retryable else "failed")
 
 
+@pytest.mark.parametrize("boundary", ["calls", "reserved_time"])
+def test_worker_preserves_budget_denial_without_another_physical_request(runtime, boundary):
+    repo, root, user, transport = runtime
+    clock = repo.clock()
+    repo.clock = lambda: clock
+    sent = []
+
+    def http(req):
+        sent.append(req)
+        return httpx.Response(200, json=chat())
+
+    with repo.db.connection(write=True) as c:
+        budget = c.execute("SELECT * FROM h2_budgets WHERE parent_budget_id IS NULL").fetchone()
+        if boundary == "calls":
+            repo._entry(c, root["run_id"], budget["budget_id"], "fixture-spend", "charge", -574)
+        else:
+            clock = budget["deadline_at"] - budget["final_reserve_ms"]
+
+    async def execute(work, session):
+        for _ in range(3):
+            await session.complete([{"role": "user", "content": "q"}], "agent_action.v1")
+        pytest.fail("a denied reservation must stop before another physical request")
+
+    async def run():
+        worker = Worker(repo, transport, "worker", executor=execute, model_adapter=adapter(http))
+        Dispatcher(repo, transport).publish_batch()
+        assert await worker.run_once(block_ms=0) == 1
+
+    asyncio.run(run())
+    status = repo.status(user, [root["task_id"]])["tasks"][0]
+    assert status["status"] == "failed"
+    assert status["attempts"][-1]["error_code"] == "budget_denied"
+    assert len(status["attempts"]) == 1
+    assert len(sent) == len(ledger(repo)) == (2 if boundary == "calls" else 0)
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_budget_entries WHERE kind='refund'").fetchone()[0] == 0
+        event = c.execute("SELECT payload_json FROM h2_events WHERE event_type='task.failed'").fetchone()
+    assert json.loads(event[0])["error_code"] == "budget_denied"
+
+
+def test_worker_keeps_unknown_execution_error_distinct_from_budget_denial(runtime):
+    repo, root, user, transport = runtime
+
+    async def execute(work):
+        raise DispatchError("fixture_unknown_error")
+
+    async def run():
+        Dispatcher(repo, transport).publish_batch()
+        assert await Worker(repo, transport, "worker", handler=execute).run_once(block_ms=0) == 1
+
+    asyncio.run(run())
+    status = repo.status(user, [root["task_id"]])["tasks"][0]
+    assert status["attempts"][-1]["error_code"] == "internal_error"
+    assert not ledger(repo)
+
+
 def test_attempt_deadline_is_not_extended_by_stream_or_call_settings(runtime):
     repo, _, _, _ = runtime
     lease, work = claimed(runtime)
@@ -918,7 +1860,8 @@ def test_context_roundtrip_and_closed_capability_refuses_further_work(runtime):
     asyncio.run(run())
 
 
-def test_model_db_failure_propagates_without_ack(runtime, monkeypatch):
+@pytest.mark.parametrize("literal_control", [False, True])
+def test_model_db_failure_propagates_without_ack(runtime, monkeypatch, literal_control):
     repo, _, _, transport = runtime
     Dispatcher(repo, transport).publish_batch()
 
@@ -936,7 +1879,9 @@ def test_model_db_failure_propagates_without_ack(runtime, monkeypatch):
         transport,
         "worker",
         executor=execute,
-        model_adapter=adapter(lambda req: httpx.Response(200, json=chat())),
+        model_adapter=adapter(lambda req: public_response(
+            '{"type":"final","output":{"answer":"raw\nline"}}', "openai-compatible", False,
+        ) if literal_control else httpx.Response(200, json=chat())),
     )
     with pytest.raises(sqlite3.OperationalError):
         asyncio.run(worker.run_once(block_ms=0))

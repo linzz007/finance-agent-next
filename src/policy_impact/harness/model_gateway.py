@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import http.client
+import json
 import math
 import re
 import time
@@ -30,8 +30,11 @@ def _parse_dsml_tool_action(content: str) -> dict[str, Any] | None:
     """Convert one DeepSeek text-mode DSML tool call into an internal action.
 
     The gateway may use either ASCII ``||`` or full-width vertical bars in the
-    marker. Anything beyond one ``tool_call`` and its named parameters is
-    rejected so arbitrary XML/prose cannot become executable input.
+    marker. DeepSeek text-mode responses have appeared in two equivalent
+    dialects: ``tool_call`` with a ``tool_name`` parameter, and ``tool.call``
+    with a ``name`` parameter. Both are reduced to the same internal action.
+    Anything beyond one tool call and its named parameters is rejected so
+    arbitrary XML/prose cannot become executable input.
     """
     marker = r"(?:\|\||\uff5c\uff5c)DSML(?:\|\||\uff5c\uff5c)"
     calls = re.fullmatch(
@@ -47,7 +50,7 @@ def _parse_dsml_tool_action(content: str) -> dict[str, Any] | None:
         calls.group("body"),
         flags=re.DOTALL,
     )
-    if invoke is None or invoke.group("name") != "tool_call":
+    if invoke is None or invoke.group("name") not in {"tool_call", "tool.call"}:
         return None
     parameter_pattern = re.compile(
         rf"<{marker}\s+parameter\s+name=\"(?P<name>[^\"]+)\"\s+"
@@ -62,7 +65,10 @@ def _parse_dsml_tool_action(content: str) -> dict[str, Any] | None:
         if body[cursor:match.start()].strip():
             return None
         name = match.group("name")
-        if name in parameters:
+        canonical_name = "tool_name" if name in {"name", "tool_name"} else name
+        if canonical_name not in {"tool_name", "arguments"}:
+            return None
+        if canonical_name in parameters:
             return None
         value: Any = match.group("value")
         if match.group("string") == "false":
@@ -70,7 +76,7 @@ def _parse_dsml_tool_action(content: str) -> dict[str, Any] | None:
                 value = json.loads(value.strip())
             except json.JSONDecodeError:
                 return None
-        parameters[name] = value
+        parameters[canonical_name] = value
         cursor = match.end()
     if body[cursor:].strip() or "tool_name" not in parameters:
         return None
@@ -159,7 +165,7 @@ class AnthropicCompatibleModelAdapter:
         self.max_attempts = max(1, max_attempts)
 
     @classmethod
-    def from_env(cls) -> "AnthropicCompatibleModelAdapter":
+    def from_env(cls) -> AnthropicCompatibleModelAdapter:
         config = effective_model_config()
         return cls(
             model_id=config["model_id"],
@@ -386,6 +392,7 @@ class AnthropicCompatibleModelAdapter:
                 adapter._validate_schema(parsed, schema_name)
                 if schema_name in {"agent_action.v1", "general_chat_agent_loop.v1", "finance.research_result.v1"}:
                     from pydantic import TypeAdapter
+
                     from policy_impact.runtime.actions import AgentAction
                     from policy_impact.runtime.research_contracts import ResearchResult
 
@@ -488,6 +495,7 @@ class AnthropicCompatibleModelAdapter:
                 if not structure_retries or (structure_retries < 2 and not has_final_body and lock_body is None):
                     structure_retries += 1
                     from pydantic import TypeAdapter
+
                     from policy_impact.runtime.actions import AgentAction
 
                     feedback = {
@@ -543,7 +551,7 @@ class AnthropicCompatibleModelAdapter:
 
     @staticmethod
     def _is_retryable_transport_error(message: str) -> bool:
-        match = re.search(r"\bHTTP\s+(\d{3})\b", str(message or ""), flags=re.I)
+        match = re.search(r"\bHTTP\s+(\d{3})\b", str(message or ""), flags=re.IGNORECASE)
         if match:
             status = int(match.group(1))
             return status in {408, 409, 425, 429} or status >= 500
@@ -568,11 +576,11 @@ class AnthropicCompatibleModelAdapter:
         if not text:
             return None
         if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S).strip()
-        match = re.search(r'"answer"\s*:\s*"(?P<answer>.*)', text, re.S)
+            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+        match = re.search(r'"answer"\s*:\s*"(?P<answer>.*)', text, re.DOTALL)
         if match:
             answer = match.group("answer")
-            answer = re.sub(r'"\s*}?\s*}?\s*$', "", answer, flags=re.S)
+            answer = re.sub(r'"\s*}?\s*}?\s*$', "", answer, flags=re.DOTALL)
             answer = answer.replace(r"\n", "\n").replace(r'\"', '"').strip()
         elif not text.startswith("{"):
             answer = text
@@ -681,7 +689,7 @@ class AnthropicCompatibleModelAdapter:
     def _parse_json_payload(content: str) -> dict[str, Any]:
         text = content.strip()
         if text.startswith("```"):
-            match = re.search(r"```(?:json)?\s*(.*?)```", text, re.S | re.I)
+            match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
             if match:
                 text = match.group(1).strip()
         try:
@@ -696,7 +704,7 @@ class AnthropicCompatibleModelAdapter:
             except json.JSONDecodeError as nested:
                 raise ValueError(f"响应不是合法 JSON：{nested.msg}") from nested
         if not isinstance(payload, dict):
-            raise ValueError("响应顶层必须是 JSON 对象")
+            raise ValueError("响应顶层必须是 JSON 对象")  # noqa: TRY004 - parser failures share the format-retry contract
         return payload
 
     @staticmethod
@@ -818,7 +826,7 @@ class AnthropicCompatibleModelAdapter:
             raise ValueError(f"{schema_name} 的 type 必须是 final/tool_call/delegate/request_approval")
         output = payload.get("output")
         if not isinstance(output, dict):
-            raise ValueError("响应缺少 JSON 对象 output")
+            raise ValueError("响应缺少 JSON 对象 output")  # noqa: TRY004 - schema failures share the existing diagnostic path
         if schema_name == "report_discovery_plan.v1":
             if payload.get("type") != "final":
                 raise ValueError("report_discovery_plan.v1 requires type=final")
@@ -862,12 +870,12 @@ class AnthropicCompatibleModelAdapter:
                 raise ValueError("research_report.v1 缺少 output.thesis")
             for key in ("evidence", "risks", "recommendations", "next_checks"):
                 if not isinstance(output.get(key), list):
-                    raise ValueError(f"research_report.v1 的 output.{key} 必须是数组")
+                    raise ValueError(f"research_report.v1 的 output.{key} 必须是数组")  # noqa: TRY004 - preserve schema error classification
         if schema_name == "conversation_summary.v1":
             if not str(output.get("summary") or "").strip():
                 raise ValueError("conversation_summary.v1 缺少 output.summary")
             for key in ("user_facts", "decisions", "open_loops"):
                 if not isinstance(output.get(key), list):
-                    raise ValueError(f"conversation_summary.v1 的 output.{key} 必须是数组")
+                    raise ValueError(f"conversation_summary.v1 的 output.{key} 必须是数组")  # noqa: TRY004 - preserve schema error classification
         if schema_name == "policy_applicability.v1" and not isinstance(output.get("assessments"), list):
             raise ValueError("policy_applicability.v1 缺少 output.assessments 数组")

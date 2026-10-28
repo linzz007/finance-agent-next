@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from threading import Barrier
 from uuid import uuid4
 
 import fakeredis
@@ -52,6 +53,7 @@ class Clock:
 def setup(tmp_path):
     clock = Clock()
     config = SchedulerConfig(
+        budget_policy="hierarchical",
         stream_name="finance-agent-next:fixture:h2:dispatch", publish_attempts=2
     )
     repo = DispatchRepository(
@@ -147,7 +149,7 @@ def test_schema_matches_contract_and_explicit_migration(setup):
     with repo.db.connection() as c:
         assert c.execute("PRAGMA foreign_key_check").fetchall() == []
         assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert c.execute("SELECT count(*) FROM h2_schema_migrations").fetchone()[0] == 1
+        assert c.execute("SELECT count(*) FROM h2_schema_migrations").fetchone()[0] == 2
         assert c.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
 
@@ -449,6 +451,11 @@ def test_send_sequence_and_followup_new_task_same_thread(setup):
     assert next_work["data"]["created_follow_up_task"]
     assert next_work["data"]["task_id"] != child["task_id"]
     assert status(repo, user, child["task_id"])["status"] == "succeeded"
+    followup_lease = claim(repo, next_work["data"]["task_id"])
+    brief = repo.execution_input(followup_lease)["brief"]
+    assert brief["success_criteria"] == ["explain"]
+    assert brief["previous_task_id"] == child["task_id"]
+    assert brief["previous_result_ref"] == status(repo, user, child["task_id"])["result_ref"]
 
 
 def test_resume_checkpoint_and_explicit_model_selection(setup):
@@ -491,6 +498,190 @@ def test_no_automatic_model_fallback(setup):
     assert view["status"] == "failed" and len(view["attempts"]) == 1
 
 
+@pytest.mark.parametrize("competing_calls,allowed", [(551, False), (546, True)])
+def test_resume_cannot_redelegate_parent_finalization_reserve(setup, competing_calls, allowed):
+    repo, _, user, root = setup
+    child = spawn(repo, user)["data"]
+    old = claim(repo, child["task_id"])
+    checkpoint = repo.save_checkpoint(old, state(repo, old))
+    repo.fail(old, "quota_error")
+    spawn(repo, user, "competing-allocation", requested_budget={
+        "model_calls": competing_calls, "wall_time_ms": 600000,
+    })
+    with repo.db.connection() as c:
+        before = {table: c.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in (
+            "h2_attempts", "h2_budget_entries", "h2_snapshots", "h2_commands", "h2_events",
+        )}
+        old_policy = c.execute(
+            "SELECT model_policy_ref FROM h2_threads WHERE thread_id=?", (child["thread_id"],),
+        ).fetchone()[0]
+    request = Resume(task_id=child["task_id"], idempotency_key="restore", checkpoint_ref=checkpoint,
+                     model_profile="deepseek")
+    if allowed:
+        result = repo.resume(user, request)
+        assert result["data"]["allocated_budget"] == {"model_calls": 30}
+        assert status(repo, user, root["task_id"])["budget"]["local_available"] == 24
+        assert status(repo, user, child["task_id"])["budget"]["local_available"] == 30
+    else:
+        with pytest.raises(DispatchError, match="budget_denied"):
+            repo.resume(user, request)
+        with repo.db.connection() as c:
+            after = {table: c.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in before}
+            assert after == before
+            assert c.execute(
+                "SELECT model_policy_ref FROM h2_threads WHERE thread_id=?", (child["thread_id"],),
+            ).fetchone()[0] == old_policy
+        assert status(repo, user, root["task_id"])["budget"]["local_available"] == 49
+        assert status(repo, user, child["task_id"])["status"] == "failed"
+
+
+def _failed_child_with_followup(repo, user):
+    child = spawn(repo, user)["data"]
+    old = claim(repo, child["task_id"])
+    checkpoint = repo.save_checkpoint(old, state(repo, old))
+    repo.fail(old, "quota_error")
+    followup = repo.send(user, Send(
+        thread_id=child["thread_id"], idempotency_key="followup", content="Clarify the reasoning",
+        follow_up={"requested_budget": {"model_calls": 5, "wall_time_ms": 300000},
+                   "output_contract": {"name": "fixture", "version": "1"},
+                   "success_criteria": ["Preserve source conditions"]},
+    ))["data"]
+    return child, checkpoint, followup
+
+
+@pytest.mark.parametrize("followup_state", ["queued", "running", "waiting"])
+def test_resume_rejects_another_open_task_on_same_thread(setup, followup_state):
+    repo, _, user, _ = setup
+    child, checkpoint, followup = _failed_child_with_followup(repo, user)
+    if followup_state != "queued":
+        other = claim(repo, followup["task_id"])
+        if followup_state == "waiting":
+            repo.suspend(other, state(repo, other))
+    with repo.db.connection() as c:
+        before = c.execute("SELECT count(*) FROM h2_attempts").fetchone()[0]
+        entries = c.execute("SELECT count(*) FROM h2_budget_entries").fetchone()[0]
+    with pytest.raises(DispatchError, match="thread_busy"):
+        repo.resume(user, Resume(task_id=child["task_id"], checkpoint_ref=checkpoint,
+                                 idempotency_key="resume-old"))
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_attempts").fetchone()[0] == before
+        assert c.execute("SELECT count(*) FROM h2_budget_entries").fetchone()[0] == entries
+        assert not c.execute("PRAGMA foreign_key_check").fetchall()
+
+
+def test_closed_thread_cannot_resume_a_failed_task(setup):
+    repo, _, user, _ = setup
+    child = spawn(repo, user)["data"]
+    old = claim(repo, child["task_id"])
+    checkpoint = repo.save_checkpoint(old, state(repo, old))
+    repo.fail(old, "quota_error")
+    with repo.db.connection(write=True) as c:
+        c.execute("UPDATE h2_threads SET status='closed' WHERE thread_id=?", (child["thread_id"],))
+    with pytest.raises(DispatchError, match="invalid_state"):
+        repo.resume(user, Resume(task_id=child["task_id"], checkpoint_ref=checkpoint,
+                                 idempotency_key="resume-closed"))
+    assert len(status(repo, user, child["task_id"])["attempts"]) == 1
+
+
+def test_resume_after_completed_followup_charges_the_restored_task_account(setup):
+    repo, _, user, root = setup
+    child, checkpoint, followup = _failed_child_with_followup(repo, user)
+    other = claim(repo, followup["task_id"])
+    repo.reserve_call(other, "followup-call")
+    repo.call_started(other, "followup-call")
+    finish(repo, other)
+    result_ref = status(repo, user, followup["task_id"])["result_ref"]
+    repo.resume(user, Resume(task_id=child["task_id"], checkpoint_ref=checkpoint,
+                             idempotency_key="restore-old"))
+    restored = claim(repo, child["task_id"])
+    repo.reserve_call(restored, "restored-call")
+    with repo.db.connection() as c:
+        task_budget = c.execute("SELECT budget_ref FROM h2_tasks WHERE task_id=?", (child["task_id"],)).fetchone()[0]
+        thread_budget = c.execute("SELECT budget_ref FROM h2_threads WHERE thread_id=?", (child["thread_id"],)).fetchone()[0]
+        call_budget = c.execute("SELECT budget_id FROM h2_model_calls WHERE call_id='restored-call'").fetchone()[0]
+        charge_budget = c.execute("SELECT budget_id FROM h2_budget_entries WHERE call_id='restored-call' AND kind='charge'").fetchone()[0]
+        assert task_budget == thread_budget == call_budget == charge_budget
+    finish(repo, restored)
+    assert status(repo, user, followup["task_id"])["result_ref"] == result_ref
+    assert status(repo, user, followup["task_id"])["budget"]["consumed"] == 1
+    assert status(repo, user, child["task_id"])["budget"]["consumed"] == 1
+    view = status(repo, user, root["task_id"])["budget"]
+    assert view["remaining"] == 598 and view["consumed"] == 2
+
+
+@pytest.mark.parametrize("resumed_state", ["queued", "running", "waiting"])
+@pytest.mark.parametrize("new_work", [False, True])
+def test_send_targets_the_open_resumed_task_not_the_newest_created_task(setup, resumed_state, new_work):
+    repo, _, user, _ = setup
+    child, checkpoint, followup = _failed_child_with_followup(repo, user)
+    completed = claim(repo, followup["task_id"])
+    finish(repo, completed)
+    previous_result = status(repo, user, followup["task_id"])["result_ref"]
+    repo.resume(user, Resume(task_id=child["task_id"], checkpoint_ref=checkpoint,
+                             idempotency_key="resume-before-send"))
+    if resumed_state != "queued":
+        active = claim(repo, child["task_id"])
+        if resumed_state == "waiting":
+            repo.suspend(active, state(repo, active))
+    with repo.db.connection() as c:
+        budget_entries = c.execute("SELECT count(*) FROM h2_budget_entries").fetchone()[0]
+    request = Send(
+        thread_id=child["thread_id"], idempotency_key="message-to-resumed-task", content="Keep the conditions",
+        follow_up={
+            "requested_budget": {"model_calls": 5, "wall_time_ms": 300000},
+            "output_contract": {"name": "fixture", "version": "1"},
+            "success_criteria": ["Keep the conditions"],
+        } if new_work else None,
+    )
+    if new_work:
+        with pytest.raises(DispatchError) as error:
+            repo.send(user, request)
+        assert error.value.code == "invalid_arguments"
+    else:
+        response = repo.send(user, request)
+        assert response["data"]["task_id"] == child["task_id"]
+        assert response["data"]["created_follow_up_task"] is False
+        assert repo.send(user, request)["replayed"]
+        with repo.db.connection() as c:
+            message = c.execute("SELECT task_id,payload_ref FROM h2_messages WHERE message_id=?",
+                                (response["data"]["message_id"],)).fetchone()
+            assert message["task_id"] == child["task_id"]
+        assert repo.read_input(user, message["payload_ref"]).decode() == request.content
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_tasks").fetchone()[0] == 3
+        assert c.execute("SELECT count(*) FROM h2_budget_entries").fetchone()[0] == budget_entries
+        assert not c.execute("PRAGMA foreign_key_check").fetchall()
+    assert status(repo, user, followup["task_id"])["result_ref"] == previous_result
+
+
+def test_send_detects_an_older_task_resumed_during_followup_preparation(setup, monkeypatch):
+    repo, _, user, _ = setup
+    child, checkpoint, followup = _failed_child_with_followup(repo, user)
+    finish(repo, claim(repo, followup["task_id"]))
+    original = repo.artifacts.json
+
+    def prepare(run_id, kind, value):
+        artifact = original(run_id, kind, value)
+        if kind == "brief":
+            repo.resume(user, Resume(task_id=child["task_id"], checkpoint_ref=checkpoint,
+                                     idempotency_key="resume-during-send"))
+        return artifact
+
+    monkeypatch.setattr(repo.artifacts, "json", prepare)
+    with pytest.raises(DispatchError) as error:
+        repo.send(user, Send(
+            thread_id=child["thread_id"], idempotency_key="stale-followup", content="new work",
+            follow_up={"requested_budget": {"model_calls": 5, "wall_time_ms": 300000},
+                       "output_contract": {"name": "fixture", "version": "1"},
+                       "success_criteria": ["Keep conditions"]},
+        ))
+    assert error.value.code == "state_conflict"
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_tasks").fetchone()[0] == 3
+        assert not c.execute("SELECT 1 FROM h2_commands WHERE idempotency_key='stale-followup'").fetchone()
+        assert not c.execute("PRAGMA foreign_key_check").fetchall()
+
+
 def test_budget_charge_idempotent_and_refund_only_unsent(setup):
     repo, _, user, _ = setup
     child = spawn(repo, user)["data"]
@@ -507,6 +698,138 @@ def test_budget_charge_idempotent_and_refund_only_unsent(setup):
     repo.refund_unsent_call(lease, "two")
     repo.refund_unsent_call(lease, "two")
     assert status(repo, user, child["task_id"])["budget"]["consumed"] == 1
+
+
+@pytest.mark.parametrize("depth", [0, 1, 2])
+@pytest.mark.parametrize("boundary", ["cancel_requested", "cancel_settled", "lease_replaced", "deadline_settled"])
+def test_confirmed_unsent_settlement_keeps_original_account_after_fencing(setup, depth, boundary):
+    repo, clock, user, root = setup
+    target = root
+    parent = user
+    for level in range(depth):
+        target = spawn(repo, parent, f"refund-depth-{level}", requested_budget={
+            "model_calls": 10, "wall_time_ms": 300000 if level == 0 else 120000,
+        })["data"]
+        if level + 1 < depth:
+            parent = claim(repo, target["task_id"]).caller()
+    lease = claim(repo, target["task_id"])
+    repo.reserve_call(lease, "confirmed-unsent")
+    if boundary.startswith("cancel"):
+        repo.cancel(user, Cancel(task_id=target["task_id"], idempotency_key="cancel-unsent"))
+        if boundary == "cancel_settled":
+            repo.settle_cancelled(lease)
+    elif boundary == "lease_replaced":
+        clock.value += repo.config.lease_ms + 1
+        repo.reconcile()
+        with repo.db.connection() as c:
+            assert c.execute("SELECT current_attempt_id FROM h2_tasks WHERE task_id=?", (
+                lease.task_id,
+            )).fetchone()[0] != lease.attempt_id
+    else:
+        clock.value = status(repo, user, target["task_id"])["deadline_at"] + 1
+        repo.reconcile()
+    repo.refund_unsent_call(lease, "confirmed-unsent")
+    repo.refund_unsent_call(lease, "confirmed-unsent")
+    with repo.db.connection() as c:
+        call = c.execute("SELECT * FROM h2_model_calls WHERE call_id='confirmed-unsent'").fetchone()
+        assert call["status"] == "failed" and call["error_code"] == "not_sent"
+        assert call["started_at"] is None
+        credits = c.execute("SELECT * FROM h2_budget_entries WHERE kind='refund'").fetchall()
+        assert len(credits) == 1 and credits[0]["budget_id"] == call["budget_id"]
+        assert c.execute("SELECT sum(delta_calls) FROM h2_budget_entries").fetchone()[0] == 600
+        terminal = c.execute("SELECT status FROM h2_tasks WHERE task_id=?", (lease.task_id,)).fetchone()[0]
+        if depth and terminal in {"cancelled", "timed_out"}:
+            assert repo._balance(c, call["budget_id"]) == 0
+        assert not c.execute("PRAGMA foreign_key_check").fetchall()
+    with pytest.raises(DispatchError):
+        repo.call_started(lease, "confirmed-unsent")
+
+
+@pytest.mark.parametrize("field", ["run_id", "thread_id", "task_id", "attempt_id", "token"])
+def test_unsent_settlement_rejects_forged_identity_without_budget_changes(setup, field):
+    repo, _, _, root = setup
+    lease = claim(repo, root["task_id"])
+    repo.reserve_call(lease, "protected-reservation")
+    forged = replace(lease, **{field: "forged"})
+    with pytest.raises(DispatchError):
+        repo.refund_unsent_call(forged, "protected-reservation")
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_budget_entries WHERE kind='refund'").fetchone()[0] == 0
+        assert c.execute("SELECT sum(delta_calls) FROM h2_budget_entries").fetchone()[0] == 599
+    repo.refund_unsent_call(lease, "protected-reservation")
+
+
+@pytest.mark.parametrize("parent_first", [False, True])
+def test_late_unsent_refund_returns_through_terminated_ancestor_budgets(setup, parent_first):
+    repo, _, user, root = setup
+    child = spawn(repo, user)["data"]
+    child_lease = claim(repo, child["task_id"])
+    grandchild = spawn(repo, child_lease.caller(), "refund-grandchild", requested_budget={
+        "model_calls": 10, "wall_time_ms": 120000,
+    })["data"]
+    grandchild_lease = claim(repo, grandchild["task_id"])
+    repo.reserve_call(grandchild_lease, "unsent-in-cancelled-tree")
+    repo.cancel(user, Cancel(task_id=root["task_id"], idempotency_key="cancel-all"))
+    leases = [child_lease, grandchild_lease] if parent_first else [grandchild_lease, child_lease]
+    for lease in leases:
+        repo.settle_cancelled(lease)
+    repo.refund_unsent_call(grandchild_lease, "unsent-in-cancelled-tree")
+    repo.refund_unsent_call(grandchild_lease, "unsent-in-cancelled-tree")
+    with repo.db.connection() as c:
+        budgets = c.execute("SELECT budget_id,parent_budget_id FROM h2_budgets").fetchall()
+        assert all(repo._balance(c, row["budget_id"]) == (0 if row["parent_budget_id"] else 600)
+                   for row in budgets)
+        assert c.execute("SELECT count(*) FROM h2_budget_entries WHERE kind='refund'").fetchone()[0] == 1
+        assert c.execute("SELECT count(*) FROM h2_tasks WHERE status='cancelled'").fetchone()[0] == 3
+
+
+@pytest.mark.parametrize("settled", [False, True])
+def test_started_call_is_never_refunded_after_cancellation(setup, settled):
+    repo, _, user, root = setup
+    lease = claim(repo, root["task_id"])
+    repo.reserve_call(lease, "started-request")
+    repo.call_started(lease, "started-request")
+    repo.cancel(user, Cancel(task_id=lease.task_id, idempotency_key="cancel-started"))
+    if settled:
+        repo.settle_cancelled(lease)
+    with pytest.raises(DispatchError):
+        repo.refund_unsent_call(lease, "started-request")
+    with repo.db.connection() as c:
+        call = c.execute("SELECT * FROM h2_model_calls").fetchone()
+        assert call["status"] == ("unknown" if settled else "started")
+        assert call["started_at"] is not None
+        assert c.execute("SELECT count(*) FROM h2_budget_entries WHERE kind='refund'").fetchone()[0] == 0
+        assert c.execute("SELECT sum(delta_calls) FROM h2_budget_entries").fetchone()[0] == 599
+
+
+def test_start_and_confirmed_unsent_refund_are_mutually_exclusive(setup):
+    repo, _, _, root = setup
+    lease = claim(repo, root["task_id"])
+    started = 0
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        for index in range(20):
+            call_id = f"competing-unsent-{index}"
+            repo.reserve_call(lease, call_id)
+            barrier = Barrier(2)
+
+            def compete(method, barrier=barrier, call_id=call_id):
+                barrier.wait(timeout=10)
+                try:
+                    method(lease, call_id)
+                except DispatchError as exc:
+                    return exc.code
+                return "accepted"
+
+            futures = [pool.submit(compete, method) for method in (
+                repo.call_started, repo.refund_unsent_call,
+            )]
+            outcomes = [future.result(timeout=15) for future in futures]
+            assert sorted(outcomes) == ["accepted", "invalid_state"]
+            with repo.db.connection() as c:
+                row = c.execute("SELECT * FROM h2_model_calls WHERE call_id=?", (call_id,)).fetchone()
+                started += int(row["status"] == "started")
+                assert (row["started_at"] is not None) == (row["status"] == "started")
+                assert c.execute("SELECT sum(delta_calls) FROM h2_budget_entries").fetchone()[0] == 600 - started
 
 
 def test_partial_metadata_retains_body_and_paginated_read_audit(setup):
@@ -534,6 +857,194 @@ def test_partial_metadata_retains_body_and_paginated_read_audit(setup):
             ).fetchone()[0]
             == 1
         )
+
+
+@pytest.mark.parametrize("view", ["summary", "full", "section"])
+def test_result_read_coverage_survives_continue_without_duplicate_completion(setup, view):
+    repo, _, user, root = setup
+    child = spawn(repo, user)["data"]
+    source = claim(repo, child["task_id"])
+    detail = repo.store_text(source.caller(), "section", "abcdefghij")
+    result = finish(repo, source, content="abcdefghij", sections={"detail": detail})
+    section = "detail" if view == "section" else None
+    first = claim(repo, root["task_id"])
+    prefix = repo.result_get(first.caller(), result["result_ref"], view=view, section=section, limit=5)
+    assert prefix["has_more"] is True and prefix["next_offset"] == 5
+    with repo.db.connection() as c:
+        assert c.execute(
+            "SELECT count(*) FROM h2_events WHERE event_type=?", (f"result.{view}_viewed",)
+        ).fetchone()[0] == 0
+    repo.continue_task(first, state(repo, first))
+    second = claim(repo, root["task_id"])
+    assert second.attempt_id != first.attempt_id
+    suffix = repo.result_get(second.caller(), result["result_ref"], view=view, section=section, offset=5)
+    assert suffix["has_more"] is False
+    with repo.db.connection() as c:
+        completed = c.execute(
+            "SELECT payload_json FROM h2_events WHERE event_type=?", (f"result.{view}_viewed",)
+        ).fetchall()
+    assert len(completed) == 1
+    identity = json.loads(completed[0][0])
+    assert identity["reader_attempt_id"] == second.attempt_id
+    assert identity["reader_task_id"] == root["task_id"]
+    assert identity["reader_kind"] == "agent"
+    repo.continue_task(second, state(repo, second))
+    third = claim(repo, root["task_id"])
+    repo.result_get(third.caller(), result["result_ref"], view=view, section=section, offset=5)
+    with repo.db.connection() as c:
+        assert c.execute(
+            "SELECT count(*) FROM h2_events WHERE event_type=?", (f"result.{view}_viewed",)
+        ).fetchone()[0] == 1
+        pages = [json.loads(row[0]) for row in c.execute(
+            "SELECT payload_json FROM h2_events WHERE event_type='result.page_viewed'"
+        )]
+    assert [item["reader_attempt_id"] for item in pages] == [
+        first.attempt_id, second.attempt_id, third.attempt_id,
+    ]
+
+
+@pytest.mark.parametrize("older_reader", ["agent", "unscoped_user"])
+def test_result_coverage_recovers_old_agent_page_scope_but_not_user_export(setup, older_reader):
+    repo, _, user, root = setup
+    child = spawn(repo, user)["data"]
+    result = finish(repo, claim(repo, child["task_id"]), content="abcdefghij")
+    first = claim(repo, root["task_id"])
+    with repo.db.connection(write=True) as c:
+        repo._event(c, repo._task(c, child["task_id"]), "result.page_viewed", {
+            "result_ref": result["result_ref"],
+            "reader_attempt_id": first.attempt_id if older_reader == "agent" else None,
+            "reader_thread_id": first.thread_id,
+            "view": "full", "section": None, "start": 0, "end": 5,
+        })
+    repo.continue_task(first, state(repo, first))
+    second = claim(repo, root["task_id"])
+    repo.result_get(second.caller(), result["result_ref"], view="full", offset=5)
+    with repo.db.connection() as c:
+        completed = c.execute(
+            "SELECT payload_json FROM h2_events WHERE event_type='result.full_viewed'"
+        ).fetchall()
+    assert len(completed) == int(older_reader == "agent")
+    if completed:
+        assert json.loads(completed[0][0])["reader_task_id"] == root["task_id"]
+
+
+@pytest.mark.parametrize("other_scope", ["user_export", "section", "result", "reader_thread", "follow_up"])
+def test_result_page_coverage_does_not_merge_unrelated_read_scopes(setup, other_scope):
+    repo, _, user, root = setup
+    source_task = spawn(repo, user, "source")["data"]
+    source = claim(repo, source_task["task_id"])
+    detail = repo.store_text(source.caller(), "section", "abcdefghij")
+    result = finish(repo, source, content="abcdefghij", sections={"detail": detail})
+    if other_scope in {"reader_thread", "follow_up"}:
+        reader_task = spawn(repo, user, "reader", input_refs=[result["full_ref"]])["data"]
+        reader = claim(repo, reader_task["task_id"])
+    else:
+        reader = claim(repo, root["task_id"])
+    first_caller, first_result, first_view, first_section = reader.caller(), result, "full", None
+    if other_scope == "user_export":
+        first_caller = user
+    elif other_scope == "section":
+        first_view, first_section = "section", "detail"
+    elif other_scope == "result":
+        other = spawn(repo, user, "other-source")["data"]
+        first_result = finish(repo, claim(repo, other["task_id"]), content="abcdefghij")
+    repo.result_get(first_caller, first_result["result_ref"], view=first_view, section=first_section, limit=5)
+    if other_scope == "reader_thread":
+        reader_task = spawn(repo, user, "other-reader", input_refs=[result["full_ref"]])["data"]
+        reader = claim(repo, reader_task["task_id"])
+    elif other_scope == "follow_up":
+        finish(repo, reader)
+        follow_up = repo.send(user, Send(
+            thread_id=reader.thread_id, idempotency_key="follow-up-reader", content="Read again.",
+            follow_up={"requested_budget": {"model_calls": 5, "wall_time_ms": 300000},
+                       "output_contract": {"name": "fixture", "version": "1"},
+                       "success_criteria": ["Read assigned result"]},
+        ))["data"]
+        old = reader
+        reader = claim(repo, follow_up["task_id"])
+        assert old.thread_id == reader.thread_id and old.task_id != reader.task_id
+    repo.result_get(reader.caller(), result["result_ref"], view="full", offset=5)
+    with repo.db.connection() as c:
+        assert c.execute(
+            "SELECT count(*) FROM h2_events WHERE event_type='result.full_viewed'"
+        ).fetchone()[0] == 0
+    repo.result_get(reader.caller(), result["result_ref"], view="full", limit=5)
+    with repo.db.connection() as c:
+        completed = c.execute(
+            "SELECT payload_json FROM h2_events WHERE event_type='result.full_viewed'"
+        ).fetchall()
+    assert len(completed) == 1
+    assert json.loads(completed[0][0])["reader_task_id"] == reader.task_id
+
+
+def test_result_coverage_gap_survives_new_attempt_until_missing_range_is_read(setup):
+    repo, _, user, root = setup
+    child = spawn(repo, user)["data"]
+    result = finish(repo, claim(repo, child["task_id"]), content="abcdefghij")
+    first = claim(repo, root["task_id"])
+    repo.result_get(first.caller(), result["result_ref"], view="full", limit=3)
+    repo.continue_task(first, state(repo, first))
+    second = claim(repo, root["task_id"])
+    repo.result_get(second.caller(), result["result_ref"], view="full", offset=5)
+    with repo.db.connection() as c:
+        assert c.execute(
+            "SELECT count(*) FROM h2_events WHERE event_type='result.full_viewed'"
+        ).fetchone()[0] == 0
+    repo.continue_task(second, state(repo, second))
+    third = claim(repo, root["task_id"])
+    assert repo.result_get(third.caller(), result["result_ref"], view="full", offset=3, limit=2)["content"] == "de"
+    with repo.db.connection() as c:
+        completed = c.execute(
+            "SELECT payload_json FROM h2_events WHERE event_type='result.full_viewed'"
+        ).fetchall()
+    assert len(completed) == 1
+    assert json.loads(completed[0][0])["reader_attempt_id"] == third.attempt_id
+
+
+def test_older_completed_result_view_is_not_reemitted_after_continue(setup):
+    repo, _, user, root = setup
+    child = spawn(repo, user)["data"]
+    result = finish(repo, claim(repo, child["task_id"]), content="abcdefghij")
+    first = claim(repo, root["task_id"])
+    old_identity = {"result_ref": result["result_ref"], "reader_attempt_id": first.attempt_id,
+                    "reader_thread_id": first.thread_id, "view": "full", "section": None,
+                    "start": 0, "end": 10}
+    with repo.db.connection(write=True) as c:
+        source_task = repo._task(c, child["task_id"])
+        repo._event(c, source_task, "result.page_viewed", old_identity)
+        repo._event(c, source_task, "result.full_viewed", old_identity, key="old-completed-view")
+    repo.continue_task(first, state(repo, first))
+    second = claim(repo, root["task_id"])
+    repo.result_get(second.caller(), result["result_ref"], view="full")
+    with repo.db.connection() as c:
+        completed = c.execute(
+            "SELECT payload_json,event_key FROM h2_events WHERE event_type='result.full_viewed'"
+        ).fetchall()
+    assert [(json.loads(row[0]), row[1]) for row in completed] == [(old_identity, "old-completed-view")]
+
+
+def test_result_section_coverage_does_not_mix_named_sections(setup):
+    repo, _, user, root = setup
+    child = spawn(repo, user)["data"]
+    source = claim(repo, child["task_id"])
+    detail = repo.store_text(source.caller(), "section", "abcdefghij")
+    result = finish(repo, source, sections={"alpha": detail, "beta": detail})
+    first = claim(repo, root["task_id"])
+    repo.result_get(first.caller(), result["result_ref"], view="section", section="alpha", limit=5)
+    repo.continue_task(first, state(repo, first))
+    second = claim(repo, root["task_id"])
+    repo.result_get(second.caller(), result["result_ref"], view="section", section="beta", offset=5)
+    with repo.db.connection() as c:
+        assert c.execute(
+            "SELECT count(*) FROM h2_events WHERE event_type='result.section_viewed'"
+        ).fetchone()[0] == 0
+    repo.result_get(second.caller(), result["result_ref"], view="section", section="beta", limit=5)
+    with repo.db.connection() as c:
+        completed = c.execute(
+            "SELECT payload_json FROM h2_events WHERE event_type='result.section_viewed'"
+        ).fetchall()
+    assert len(completed) == 1
+    assert json.loads(completed[0][0])["section"] == "beta"
 
 
 def test_event_pagination_does_not_skip(setup):
@@ -1161,10 +1672,9 @@ def test_explicit_result_grant_does_not_authorize_unlisted_sections(setup):
         ).fetchone()
     child = spawn(repo, user, "reader", input_refs=[row["full_ref"]])["data"]
     reader = claim(repo, child["task_id"])
-    assert (
-        repo.result_get(reader.caller(), saved["result_ref"], view="full")["content"]
-        == "full useful analysis"
-    )
+    full = repo.result_get(reader.caller(), saved["result_ref"], view="full")
+    assert full["content"] == "full useful analysis" and full["section_refs"] == {}
+    assert repo.result_get(user, saved["result_ref"], view="summary")["section_refs"] == {"detail": section}
     with pytest.raises(DispatchError, match="not_found"):
         repo.result_get(reader.caller(), saved["result_ref"], view="summary")
     with pytest.raises(DispatchError, match="not_found"):
@@ -1197,6 +1707,46 @@ def test_user_model_policy_update_cas_preserves_running_attempt(setup):
         repo.set_model_policy(parent.caller(), request)
 
 
+@pytest.mark.parametrize("explicit_profile", [None, "gpt"])
+def test_spawn_rejects_model_policy_change_during_brief_preparation(setup, monkeypatch, explicit_profile):
+    repo, _, user, root = setup
+    running = claim(repo, root["task_id"])
+    original = repo.artifacts.json
+    before = {}
+    tables = ("h2_threads", "h2_tasks", "h2_attempts", "h2_budgets", "h2_budget_entries",
+              "h2_snapshots", "h2_artifacts", "h2_commands", "h2_events", "h2_outbox")
+
+    def prepare(run_id, kind, value):
+        artifact = original(run_id, kind, value)
+        if kind == "brief" and not before:
+            with repo.db.connection() as c:
+                policy = c.execute("SELECT model_policy_ref FROM h2_runs").fetchone()[0]
+            repo.set_model_policy(user, ModelPolicySet(
+                idempotency_key="change-during-spawn", expected_policy_ref=policy,
+                selected_profile="deepseek", allowed_profiles=["gpt", "deepseek"],
+            ))
+            with repo.db.connection() as c:
+                before.update({table: c.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                               for table in tables})
+        return artifact
+
+    monkeypatch.setattr(repo.artifacts, "json", prepare)
+    with pytest.raises(DispatchError) as conflict:
+        spawn(repo, running.caller(), "raced-policy", model_profile=explicit_profile)
+    assert conflict.value.code == "state_conflict"
+    with repo.db.connection() as c:
+        assert {table: c.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                for table in tables} == before
+    assert status(repo, user, root["task_id"])["budget"]["local_available"] == 600
+    child = spawn(repo, running.caller(), "raced-policy", model_profile=explicit_profile)["data"]
+    expected = explicit_profile or "deepseek"
+    child_input = repo.execution_input(claim(repo, child["task_id"]))
+    assert child_input["model"]["profile"] == expected
+    assert child_input["brief"]["model_profile"] == expected
+    assert repo.execution_input(running)["model"]["profile"] == "gpt"
+    assert spawn(repo, running.caller(), "raced-policy", model_profile=explicit_profile)["replayed"]
+
+
 def test_model_revocation_stops_new_calls_without_fallback(setup):
     repo, _, user, root = setup
     parent = claim(repo, root["task_id"])
@@ -1219,10 +1769,10 @@ def test_model_revocation_stops_new_calls_without_fallback(setup):
     assert repo.execution_input(lease)["model"]["profile"] == "gpt"
 
 
-@pytest.fixture
-def real_redis(setup, tmp_path):
+@pytest.fixture(params=["fake", "real"], ids=["fakeredis", "redis-service"])
+def real_redis(setup, tmp_path, request):
     url = os.environ.get("H2_TEST_REDIS_URL")
-    if not url:
+    if request.param == "real" and not url:
         pytest.skip("H2_TEST_REDIS_URL not provided; no real Redis service started")
     source, clock, _, _ = setup
     config = replace(
@@ -1246,7 +1796,11 @@ def real_redis(setup, tmp_path):
         tools=TOOLS,
     )["data"]
     caller = CallerContext(root["run_id"], root["thread_id"], root["task_id"], trusted_user=True)
-    transport = RedisStreams.from_url(url, config.stream_name)
+    transport = (
+        RedisStreams.from_url(url, config.stream_name)
+        if request.param == "real"
+        else RedisStreams(fakeredis.FakeRedis(decode_responses=True), config.stream_name)
+    )
     try:
         transport.client.ping()
         yield repo, clock, caller, root, transport
@@ -1288,6 +1842,191 @@ def test_real_redis_lost_stream_rebuilds_notification(real_redis):
     repo.start(lease)
     finish(repo, lease)
     transport.ack(entry)
+
+
+def test_redis_publish_commit_gap_duplicates_only_the_notification(real_redis, monkeypatch):
+    repo, clock, user, root, transport = real_redis
+    dispatcher = Dispatcher(repo, transport)
+
+    with monkeypatch.context() as patch:
+        def unavailable(*args):
+            raise sqlite3.OperationalError("fixture crash after XADD, before published commit")
+
+        patch.setattr(repo, "published", unavailable)
+        with pytest.raises(sqlite3.OperationalError):
+            dispatcher.publish_batch()
+
+    assert transport.client.xlen(transport.stream) == 1
+    clock.value += repo.config.publisher_lease_ms + 1
+    assert dispatcher.publish_batch() == 1
+    entries = transport.receive("duplicates", count=2, block_ms=0)
+    assert len(entries) == 2 and entries[0][1] == entries[1][1]
+    executed = []
+
+    async def handler(work):
+        executed.append(work.task_id)
+        await asyncio.sleep(0.02)
+        return Submission(result_key="final", content="one accepted result", summary="summary")
+
+    async def compete():
+        workers = [Worker(repo, transport, f"duplicate-{i}", handler) for i in range(2)]
+        await asyncio.gather(*(worker.process(*entry) for worker, entry in zip(workers, entries)))
+        await workers[1].recover_once(idle_ms=0)
+
+    asyncio.run(compete())
+    assert executed == [root["task_id"]]
+    assert status(repo, user, root["task_id"])["status"] == "succeeded"
+    assert transport.client.xpending(transport.stream, transport.group)["pending"] == 0
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_results").fetchone()[0] == 1
+
+
+def test_redis_result_commit_ack_failure_does_not_reexecute(real_redis, monkeypatch):
+    from redis.exceptions import ConnectionError
+
+    repo, _, user, root, transport = real_redis
+    Dispatcher(repo, transport).publish_batch()
+    executed = []
+
+    async def handler(work):
+        executed.append(work.task_id)
+        return Submission(result_key="final", content="durable body", summary="summary")
+
+    with monkeypatch.context() as patch:
+        def unavailable(entry):
+            raise ConnectionError("fixture ACK response lost")
+
+        patch.setattr(transport, "ack", unavailable)
+        with pytest.raises(ConnectionError):
+            asyncio.run(Worker(repo, transport, "before-ack", handler).run_once(block_ms=0))
+
+    assert status(repo, user, root["task_id"])["status"] == "succeeded"
+    assert transport.client.xpending(transport.stream, transport.group)["pending"] == 1
+    restarted = Worker(repo, transport, "after-ack", handler)
+    asyncio.run(restarted.recover_once(idle_ms=0))
+    assert executed == [root["task_id"]]
+    assert transport.client.xpending(transport.stream, transport.group)["pending"] == 0
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_results").fetchone()[0] == 1
+
+
+def test_redis_expired_attempt_fences_late_result_and_keeps_charge(real_redis):
+    repo, clock, user, root, transport = real_redis
+    dispatcher = Dispatcher(repo, transport)
+    dispatcher.publish_batch()
+    _, payload = transport.receive("lost-worker", block_ms=0)[0]
+    old, _ = repo.claim(payload, "lost-worker")
+    repo.start(old)
+    repo.reserve_call(old, "synthetic-call")
+    repo.call_started(old, "synthetic-call")
+    clock.value += repo.config.lease_ms + 1
+    executed = []
+
+    async def handler(work):
+        executed.append(work.attempt_id)
+        return Submission(result_key="final", content="recovered result", summary="summary")
+
+    recovery = Worker(repo, transport, "replacement", handler)
+    asyncio.run(recovery.recover_once(idle_ms=0))
+    assert not executed
+    assert repo.delivery_settled(payload)
+    dispatcher.publish_batch()
+    asyncio.run(recovery.run_once(block_ms=0))
+    assert len(executed) == 1 and executed[0] != old.attempt_id
+    with pytest.raises(DispatchError, match="stale_lease"):
+        finish(repo, old, content="late old result")
+    view = status(repo, user, root["task_id"])
+    assert view["status"] == "succeeded" and view["budget"]["consumed"] == 1
+    assert [a["status"] for a in view["attempts"]] == ["expired", "succeeded"]
+    assert transport.client.xpending(transport.stream, transport.group)["pending"] == 0
+    with repo.db.connection() as c:
+        assert c.execute("SELECT status FROM h2_model_calls").fetchone()[0] == "unknown"
+        assert c.execute("SELECT count(*) FROM h2_results WHERE disposition='late'").fetchone()[0] == 1
+
+
+def test_redis_durable_wait_survives_worker_recreation(real_redis):
+    repo, _, user, root, transport = real_redis
+    dispatcher = Dispatcher(repo, transport)
+    dispatcher.publish_batch()
+    entry, payload = transport.receive("parent-before-wait", block_ms=0)[0]
+    parent, _ = repo.claim(payload, "parent-before-wait")
+    repo.start(parent)
+    child = spawn(repo, parent.caller())["data"]
+    checkpoint = state(repo, parent)
+    repo.suspend(parent, checkpoint, Wait(task_ids=[child["task_id"]]))
+    transport.ack(entry)
+    assert status(repo, user, root["task_id"])["status"] == "waiting"
+
+    reopened = DispatchRepository(
+        repo.db.path,
+        repo.artifacts.root,
+        profiles=repo.profiles,
+        roles=repo.roles,
+        config=repo.config,
+        clock=repo.clock,
+    )
+    observed = []
+
+    async def handler(work):
+        observed.append(work.task_id)
+        if work.task_id == root["task_id"]:
+            assert work.attempt_id != parent.attempt_id
+            assert work.checkpoint["context_ref"] == checkpoint.context_ref
+            returned = work.observations[0]["tasks"][0]
+            assert returned["task_id"] == child["task_id"]
+            assert returned["status"] == "succeeded" and returned["result_ref"]
+        return Submission(result_key="final", content="source-bound result", summary="summary")
+
+    worker = Worker(reopened, transport, "after-restart", handler)
+    publisher = Dispatcher(reopened, transport)
+    for _ in range(2):
+        publisher.publish_batch()
+        asyncio.run(worker.run_once(block_ms=0))
+    assert observed == [child["task_id"], root["task_id"]]
+    assert status(reopened, user, root["task_id"])["status"] == "succeeded"
+    assert transport.client.xpending(transport.stream, transport.group)["pending"] == 0
+
+
+def test_redis_multiworker_campaign_has_one_accepted_result_per_task(real_redis):
+    repo, _, user, root, transport = real_redis
+    parent = claim(repo, root["task_id"])
+    children = [
+        spawn(
+            repo, parent.caller(), f"campaign-{i}",
+            requested_budget={"model_calls": 5, "wall_time_ms": 600000},
+        )["data"]
+        for i in range(24)
+    ]
+    repo.suspend(parent, state(repo, parent), Wait(task_ids=[c["task_id"] for c in children]))
+    Dispatcher(repo, transport).publish_batch()
+    executed = []
+
+    async def handler(work):
+        executed.append(work.task_id)
+        await asyncio.sleep(0.01)
+        if work.task_id == root["task_id"]:
+            returned = work.observations[0]["tasks"]
+            assert len(returned) == 24 and all(t["status"] == "succeeded" for t in returned)
+        return Submission(result_key="final", content="campaign result", summary="summary")
+
+    async def campaign():
+        workers = [Worker(repo, transport, f"campaign-{i}", handler) for i in range(4)]
+        for _ in range(30):
+            Dispatcher(repo, transport).publish_batch()
+            await asyncio.gather(*(w.run_once(block_ms=0) for w in workers))
+            await workers[0].recover_once(idle_ms=0)
+            if status(repo, user, root["task_id"])["status"] == "succeeded":
+                await workers[0].recover_once(idle_ms=0)
+                return
+        pytest.fail("bounded multiworker campaign did not settle")
+
+    asyncio.run(campaign())
+    expected = {root["task_id"], *(child["task_id"] for child in children)}
+    assert set(executed) == expected and len(executed) == len(expected)
+    assert transport.client.xpending(transport.stream, transport.group)["pending"] == 0
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_results").fetchone()[0] == 25
+        assert c.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def test_child_error_wakes_parent_with_actual_failure(setup):
@@ -1367,6 +2106,126 @@ def test_transport_retry_cap_keeps_each_charge_and_attempt(setup):
             c.execute("SELECT count(*) FROM h2_model_calls WHERE status='unknown'").fetchone()[0]
             == repo.config.max_attempts
         )
+
+
+@pytest.mark.parametrize("fault", ["transport", "lease_expired"])
+def test_normal_suspensions_do_not_consume_failure_recovery_allowance(setup, fault):
+    repo, clock, user, root = setup
+    child = spawn(repo, user)["data"]
+    finish(repo, claim(repo, child["task_id"]))
+    lease = claim(repo, root["task_id"])
+    for _ in range(repo.config.max_attempts + 1):
+        checkpoint = state(repo, lease)
+        repo.suspend(lease, checkpoint, Wait(task_ids=[child["task_id"]]))
+        lease = claim(repo, root["task_id"])
+    assert status(repo, user, root["task_id"])["budget"]["consumed"] == 0
+    repo.reserve_call(lease, "after-normal-progress")
+    repo.call_started(lease, "after-normal-progress")
+    if fault == "transport":
+        repo.fail(lease, "transport_error", retryable=True)
+    else:
+        clock.value += repo.config.lease_ms + 1
+        repo.reconcile()
+
+    view = status(repo, user, root["task_id"])
+    assert view["status"] == "pending_dispatch"
+    assert view["budget"]["consumed"] == 1
+    assert sum(a["status"] == "suspended" for a in view["attempts"]) == repo.config.max_attempts + 1
+    recovered = claim(repo, root["task_id"])
+    work = repo.execution_input(recovered)
+    assert work["model"]["profile"] == "gpt"
+    assert work["checkpoint"]["context_ref"] == checkpoint.context_ref
+    with pytest.raises(DispatchError, match="stale_lease"):
+        repo.reserve_call(lease, "late-call")
+    finish(repo, recovered)
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_tasks").fetchone()[0] == 2
+        assert c.execute(
+            "SELECT status FROM h2_model_calls WHERE call_id='after-normal-progress'"
+        ).fetchone()[0] == "unknown"
+
+
+def test_mixed_faults_share_cap_without_reset_on_normal_progress(setup):
+    repo, clock, user, root = setup
+    child = spawn(repo, user)["data"]
+    finish(repo, claim(repo, child["task_id"]))
+    for i in range(repo.config.max_attempts):
+        lease = claim(repo, root["task_id"])
+        repo.suspend(lease, state(repo, lease), Wait(task_ids=[child["task_id"]]))
+        lease = claim(repo, root["task_id"])
+        call_id = f"mixed-fault-{i}"
+        repo.reserve_call(lease, call_id)
+        repo.call_started(lease, call_id)
+        if i % 2:
+            clock.value += repo.config.lease_ms + 1
+            repo.reconcile()
+        else:
+            repo.fail(lease, "transport_error", retryable=True)
+        expected = "failed" if i == repo.config.max_attempts - 1 else "pending_dispatch"
+        assert status(repo, user, root["task_id"])["status"] == expected
+    view = status(repo, user, root["task_id"])
+    assert len(view["attempts"]) == repo.config.max_attempts * 2
+    assert view["budget"]["consumed"] == repo.config.max_attempts
+    with repo.db.connection() as c:
+        assert repo._failed_attempt_count(c, root["task_id"]) == repo.config.max_attempts
+        assert c.execute("SELECT count(*) FROM h2_model_calls WHERE status='unknown'").fetchone()[0] == repo.config.max_attempts
+
+
+def test_continue_requeues_same_task_once_with_checkpoint_and_fences_old_lease(setup):
+    repo, _, user, root = setup
+    lease = claim(repo, root["task_id"])
+    deadline = status(repo, user, root["task_id"])["deadline_at"]
+    old_delivery = delivery(repo, lease.task_id)
+    checkpoint = state(repo, lease)
+    next_attempt = repo.continue_task(lease, checkpoint)
+    view = status(repo, user, root["task_id"])
+    assert view["status"] == "pending_dispatch"
+    assert [a["status"] for a in view["attempts"]] == ["suspended", "queued"]
+    assert view["budget"]["consumed"] == 0
+    assert view["deadline_at"] == deadline
+    assert repo.claim(old_delivery, "duplicate-worker") == (None, True)
+    with pytest.raises(DispatchError, match="stale_lease"):
+        repo.continue_task(lease, checkpoint)
+    recovered = claim(repo, root["task_id"])
+    assert recovered.attempt_id == next_attempt
+    assert repo.execution_input(recovered)["checkpoint"]["context_ref"] == checkpoint.context_ref
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_tasks").fetchone()[0] == 1
+        assert c.execute("SELECT count(*) FROM h2_waits").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM h2_checkpoints").fetchone()[0] == 1
+        assert c.execute("SELECT count(*) FROM h2_events WHERE event_type='task.continued'").fetchone()[0] == 1
+
+
+def test_continue_storage_failure_rolls_back_and_worker_does_not_ack(setup, monkeypatch):
+    repo, _, user, root = setup
+    transport = redis_transport(repo)
+    Dispatcher(repo, transport).publish_batch()
+    acknowledgements = []
+    monkeypatch.setattr(transport, "ack", acknowledgements.append)
+    real_outbox = repo._outbox
+
+    def fail_after_insert(*args):
+        real_outbox(*args)
+        raise sqlite3.OperationalError("fixture continue transaction failure")
+
+    monkeypatch.setattr(repo, "_outbox", fail_after_insert)
+
+    async def execute(_work, capabilities):
+        ref = await capabilities.store_context({"step": "saved action receipt"})
+        return await capabilities.continue_task(CheckpointState(
+            current_phase="research", completed_steps=["action-1"], pending_steps=[],
+            input_refs=[], context_ref=ref, consumed_message_seq=1, last_event_id="0",
+        ))
+
+    with pytest.raises(sqlite3.OperationalError, match="continue transaction"):
+        asyncio.run(Worker(repo, transport, "continue-worker", executor=execute).run_once(block_ms=0))
+    assert acknowledgements == []
+    assert status(repo, user, root["task_id"])["status"] == "running"
+    with repo.db.connection() as c:
+        assert c.execute("SELECT count(*) FROM h2_attempts").fetchone()[0] == 1
+        assert c.execute("SELECT count(*) FROM h2_checkpoints").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM h2_outbox").fetchone()[0] == 1
+        assert c.execute("SELECT count(*) FROM h2_events WHERE event_type='task.continued'").fetchone()[0] == 0
 
 
 def test_heartbeat_storage_failure_stops_handler_without_ack(setup, monkeypatch):

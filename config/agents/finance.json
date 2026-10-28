@@ -1,0 +1,40 @@
+{
+  "schema_version": "finance.h2.agent_rules.v4",
+  "version": "2026-10-27.3",
+  "action_repair_limit": 5,
+  "show_role_catalog": true,
+  "prompts": {
+    "action-context": "prompts/finance/action-context.md",
+    "research-clock": "prompts/finance/research-clock.md",
+    "context-view": "prompts/finance/context-view.md",
+    "public-source": "prompts/finance/public-source.md",
+    "market-source": "prompts/finance/market-source.md",
+    "personal-source": "prompts/finance/personal-source.md",
+    "root": "prompts/finance/root.md",
+    "child-common": "prompts/finance/child-common.md",
+    "analyst": "prompts/finance/analyst.md",
+    "verifier": "prompts/finance/verifier.md",
+    "skeptic": "prompts/finance/skeptic.md",
+    "delegation-requested": "prompts/finance/delegation-requested.md",
+    "delegation-fixed": "prompts/finance/delegation-fixed.md",
+    "action-repair": "prompts/finance/action-repair.md",
+    "research-repair": "prompts/finance/research-repair.md",
+    "anchor-repair": "prompts/finance/anchor-repair.md",
+    "general": "prompts/finance/general.md"
+  },
+  "tool_descriptions": "prompts/finance/tool-descriptions.json",
+  "root_profile": {
+    "allowed_child_profiles": [
+      "general",
+      "analyst",
+      "verifier",
+      "skeptic"
+    ]
+  },
+  "roles": {
+    "general": "config/agents/profiles/general.json",
+    "analyst": "config/agents/profiles/analyst.json",
+    "verifier": "config/agents/profiles/verifier.json",
+    "skeptic": "config/agents/profiles/skeptic.json"
+  }
+}

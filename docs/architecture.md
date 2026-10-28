@@ -136,6 +136,8 @@ ArticleCard 是可选证据产物，不是每篇文章的强制输出。无相�
 
 用户于 2026-10-16 选择：专门的单篇阅读能力采用具有只读工具循环的可选阅读 Subagent，而不是只由代码组织一次分析调用。主 Agent 仍可自己阅读；委派时，阅读 Subagent 根据任务选择授权范围内的读取、回读与停止，遵守第 4 节的全文优先与连贯理解交接。一次形成充分理解即可返回，不要求每篇启动、不要求固定轮数或反复回读。现已注册并接通显式版本化 `analyst@2.0.0` 配合阅读/综合 Skills，不分别新增固定 reader/synthesizer 角色；旧 `analyst@1.0.0` 保持兼容。
 
+2026-10-26 用户批准的 [103 Profile 与核验闭环](changes/103-h2-agent-profile-and-review-loop.md)进一步明确职责分层：Root 创建每篇 Analyst 任务并给出用户层核验政策；Analyst v2 产生带核验目标的版本化草稿，依据 `required/auto/off` 请求文章级 Verifier；Runtime 从冻结 Profile 装配权限和 Brief、生成不可变草稿并派发受限 Verifier Task；Verifier 只返回绑定草稿 revision 的 ReviewReport；Analyst 逐项处置后交 Root。Root 仍负责跨文档综合和最终答案审核。103 的轮次状态和回归验收覆盖旧段落中“尚未登记新增 Profile/递归授权”的历史描述，013 调度数据模型不变；实现状态不由文档批准自动推定。
+
 Analyst 提供被分配材料的分析；Verifier 在被委派外部核查时读取独立来源；Skeptic 寻找反例、遗漏条件、口径混淆和推断跳跃。分析与综合职责不限于逐篇提炼，可由具备相应契约与授权的子任务承担跨篇工作；不因本文直接增加角色注册或改变旧输出 Schema。主 Agent 决定是否调用及采纳什么。阅读不是自动的独立事实核验；外部取材仍受父任务、角色工具和本轮权限约束，不默认要求联网，也不能因命名为阅读角色就绕过来源限制。子 Agent 不能直接发布终稿、修改父计划或访问未授权资料。
 
 委派应有任务目标、范围、可见材料/ID、允许工具、预期返回结构及父子运行关系。阅读与综合输出保留任务导向正文及可核对外层，复核角色按各自判断契约返回；不能用旧 AnalystOutput 的 claims 形状反向强制所有分析结果转为主张列表。Runtime 接收后校验并合并合法证据，主 Agent 处理结果与缺口，再用于答案；不能把子 Agent 一句话当成已经观察的独立来源。具体交接与恢复见[接口契约 3.2](finance_agent_interface_contracts.md#32-controlled-reading-subagent)及[4.1](finance_agent_interface_contracts.md#41-target-multi-article-synthesis-and-context-handoff)。
@@ -174,6 +176,7 @@ run-local 工作状态与长期 Wiki 分开，不自动把中间推断写回用�
 JSON 工具契约、有界格式纠正、分类诊断、近期大观察卸载与分页恢复遵循
 [变更 006](changes/006-json-tool-contracts-and-recovery.md)。不使用供应商原生
 Function Calling；Responses 文本接口与工具执行协议分别判断和验证。
+H2 文本动作如果出现模型尾部 transcript 或有限 XML-like 外壳，遵循[变更 083](changes/083-h2-bounded-action-json-recovery.md)：只提取并校验首个完整动作对象，尾部只留在原始审计中，不能成为观察、证据或下一轮提示词；自然语言前缀、首对象非法后的第二对象和半截 JSON 仍拒绝。
 
 2026-10-17 用户确认增加可选 Responses 文本传输，见[变更 007](changes/007-responses-transport-and-delivery.md)。
 现有默认配置保留；`gpt-responses` 使用完整本次输入和 `store=false`，不使用远端会话、

@@ -30,9 +30,15 @@ def _raise_http(error: DispatchError) -> None:
         raise HTTPException(status_code=404, detail="Harness run is not available") from error
     if error.code in {"invalid_arguments", "checkpoint_invalid", "contract_error"}:
         raise HTTPException(status_code=422, detail=error.code) from error
-    if error.code in {"idempotency_conflict", "state_conflict", "invalid_state", "stale_lease"}:
+    if error.code in {
+        "idempotency_conflict", "state_conflict", "invalid_state", "stale_lease", "thread_busy",
+        "budget_denied", "budget_reduced", "depth_exceeded", "deadline_exceeded", "cancelled",
+    }:
         raise HTTPException(status_code=409, detail=error.code) from error
-    if error.code in {"provider_error", "quota_error", "timeout", "outcome_unknown"}:
+    if error.code in {
+        "provider_error", "quota_error", "timeout", "outcome_unknown", "transport_error",
+        "artifact_unavailable", "dispatch_failed", "backpressured",
+    }:
         raise HTTPException(status_code=503, detail=error.code) from error
     raise HTTPException(status_code=500, detail="harness operation failed") from error
 

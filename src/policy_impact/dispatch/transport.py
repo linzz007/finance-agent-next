@@ -27,11 +27,11 @@ def validate_message(fields: dict) -> dict[str, str]:
     if (
         set(fields) != WIRE_FIELDS
         or any(not isinstance(v, str) or not v for v in fields.values())
+        or len(json.dumps(fields, ensure_ascii=False).encode()) > 4096
         or fields["schema_version"] != "h2.dispatch.v1"
-        or not fields["dispatch_generation"].isdigit()
+        or not fields["dispatch_generation"].isdecimal()
         or int(fields["dispatch_generation"]) < 1
         or not fields["emitted_at"].isdigit()
-        or len(json.dumps(fields, ensure_ascii=False).encode()) > 4096
     ):
         raise DispatchError("contract_error", "invalid dispatch wire message")
     return dict(fields)

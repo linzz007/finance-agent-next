@@ -8,21 +8,25 @@ import sqlite3
 from typing import Annotated
 from uuid import uuid4
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, create_model, model_validator
+
+from policy_impact.harness.context_manifest import estimate_tokens
 
 from .contracts import (
     Cancel,
     CheckpointState,
     Command,
     DispatchError,
+    FollowUp,
     Identifier,
     Resume,
     Send,
     Spawn,
     Wait,
 )
-from .model_execution import GatewayModelAdapter, ModelRequest
-from .worker import Suspend
+from .diagnostics import public_output_normalization
+from .model_execution import GatewayModelAdapter, ModelRequest, public_validation_errors
+from .worker import Continue, Suspend
 
 
 class Status(Command):
@@ -61,6 +65,24 @@ TOOL_CONTRACTS = {
 }
 
 
+def _fixed_command(model, name):
+    return create_model(name, __base__=Command, **{
+        key: (field.annotation, field) for key, field in model.model_fields.items()
+        if key != "requested_budget"
+    })
+
+
+FixedSpawn = _fixed_command(Spawn, "FixedSpawn")
+FixedFollowUp = _fixed_command(FollowUp, "FixedFollowUp")
+FixedSend = create_model("FixedSend", __base__=Send, follow_up=(FixedFollowUp | None, None))
+
+
+def tool_contracts(budget):
+    if budget.get("policy") == "fixed":
+        return {**TOOL_CONTRACTS, "agent.spawn": FixedSpawn, "agent.send": FixedSend}
+    return TOOL_CONTRACTS
+
+
 class ExecutionCapabilities:
     """Trusted handler API. The Worker alone supplies execution identity/lease.
 
@@ -85,11 +107,29 @@ class ExecutionCapabilities:
             raise DispatchError("stale_lease")
         await asyncio.to_thread(self._repository.validate_lease, self._lease)
 
+    @property
+    def tool_names(self):
+        return tuple(sorted(self._tools & TOOL_CONTRACTS.keys()))
+
+    @property
+    def instruction_rules(self):
+        """Trusted Run instructions, not model-supplied materials or permission grants."""
+        return self._work.brief.get("instruction_rules")
+
+    @property
+    def model_input_limit(self):
+        adapter = self._adapter if self._adapter is not None else GatewayModelAdapter
+        return adapter.settings(self._model_snapshot).input_limit()
+
+    def context_accepts(self, messages):
+        return estimate_tokens(messages) <= self.model_input_limit
+
     async def describe(self, name):
         await self.validate()
         if name not in self._tools or name not in TOOL_CONTRACTS:
             raise DispatchError("forbidden")
-        return {"name": name, "input_schema": TOOL_CONTRACTS[name].model_json_schema()}
+        contracts = tool_contracts(self._work.brief.get("budget", {}))
+        return {"name": name, "input_schema": contracts[name].model_json_schema()}
 
     async def tool(self, name, arguments):
         await self.validate()
@@ -98,7 +138,10 @@ class ExecutionCapabilities:
         if name == "agent.wait":
             raise DispatchError("invalid_arguments", "durable wait requires a checkpoint")
         try:
-            request = TOOL_CONTRACTS[name].model_validate(arguments)
+            contracts = tool_contracts(self._work.brief.get("budget", {}))
+            request = contracts[name].model_validate(arguments)
+            if name in {"agent.spawn", "agent.send"} and contracts is not TOOL_CONTRACTS:
+                request = TOOL_CONTRACTS[name].model_validate(request.model_dump())
         except ValidationError:
             raise DispatchError(
                 "invalid_arguments", "tool arguments do not match the contract"
@@ -114,6 +157,14 @@ class ExecutionCapabilities:
             )
         method = getattr(self._repository, name.split(".")[1])
         return await asyncio.to_thread(method, caller, request)
+
+    async def record_tool(self, name, action_key, status, artifact_ref=None):
+        await self.validate()
+        if name not in self._tools:
+            raise DispatchError("forbidden")
+        return await asyncio.to_thread(
+            self._repository.record_tool, self._lease, name, action_key, status, artifact_ref
+        )
 
     async def store_context(self, content):
         await self.validate()
@@ -136,11 +187,17 @@ class ExecutionCapabilities:
         await self.validate()
         return await asyncio.to_thread(self._repository.save_checkpoint, self._lease, state)
 
+    async def continue_task(self, checkpoint: CheckpointState):
+        await self.validate()
+        if not isinstance(checkpoint, CheckpointState):
+            raise DispatchError("checkpoint_invalid")
+        return Continue(checkpoint)
+
     async def mailbox(self):
         await self.validate()
         return await asyncio.to_thread(self._repository.mailbox, self._lease)
 
-    async def wait(self, arguments, checkpoint: CheckpointState):
+    async def validate_wait(self, arguments):
         await self.validate()
         if "agent.wait" not in self._tools:
             raise DispatchError("forbidden")
@@ -148,6 +205,11 @@ class ExecutionCapabilities:
             request = Wait.model_validate(arguments)
         except ValidationError:
             raise DispatchError("invalid_arguments") from None
+        await asyncio.to_thread(self._repository.validate_wait, self._lease, request)
+        return request
+
+    async def wait(self, arguments, checkpoint: CheckpointState):
+        request = await self.validate_wait(arguments)
         if not isinstance(checkpoint, CheckpointState):
             raise DispatchError("checkpoint_invalid")
         return Suspend(checkpoint, request)
@@ -216,6 +278,7 @@ class ExecutionCapabilities:
                             payload = event.data["payload"]
                         elif event.kind in {"completed", "failed"}:
                             error_code = event.data.get("code") if event.kind == "failed" else None
+                            normalization = public_output_normalization(event.data.get("public_output_normalization"))
                             await asyncio.to_thread(
                                 self._repository.call_finished,
                                 self._lease,
@@ -225,11 +288,21 @@ class ExecutionCapabilities:
                                 error_code=error_code,
                                 output_ref=output_ref,
                                 provider_request_id=event.data.get("provider_request_id", ""),
+                                public_output_normalization=normalization,
                             )
                             settled = True
                             if error_code:
+                                details = {"call_id": call_id, "output_ref": output_ref}
+                                if error_code == "contract_error" and event.data.get("validation_stage") in {
+                                    "action", "final.output",
+                                }:
+                                    details.update(
+                                        validation_stage=event.data["validation_stage"],
+                                        validation_errors=public_validation_errors(event.data.get("validation_errors")),
+                                    )
                                 raise DispatchError(
-                                    error_code, retryable=event.data.get("retryable", False)
+                                    error_code, retryable=event.data.get("retryable", False),
+                                    details=details,
                                 )
                             if payload is None or output_ref is None:
                                 raise DispatchError(
@@ -247,6 +320,7 @@ class ExecutionCapabilities:
                                     "output_ref": output_ref,
                                     "usage": event.data.get("usage", usage),
                                     "attempts": 1,
+                                    **({"public_output_normalization": normalization} if normalization else {}),
                                 },
                             )
                     raise DispatchError("contract_error", "model event stream has no terminal")

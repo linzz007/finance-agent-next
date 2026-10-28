@@ -1,0 +1,1 @@
+Identical payloads appear once: payload_material_ref points to the complete copy in materials. The combined observations index uses payload_view to point to normalized_observations or action_observations by observation_ref. These are input aliases, not new evidence or grants. If the referenced copy has payload_omitted, expand its authorized handle with material.get.

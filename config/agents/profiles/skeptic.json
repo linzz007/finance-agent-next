@@ -1,0 +1,54 @@
+{
+  "versions": [
+    "1.0.0"
+  ],
+  "description": "Examine an argument for actual counterevidence, hidden assumptions and failure conditions without manufacturing objections.",
+  "instructions": "skeptic",
+  "input_requirements": [
+    "The argument or focal question and success_criteria.",
+    "Authorized evidence and relevant conditions; disagreement is not itself a required outcome."
+  ],
+  "output_contract": "finance.research_result.v1",
+  "allowed_tools": [
+    "article.list",
+    "article.search",
+    "article.read",
+    "article.claims",
+    "tool.describe",
+    "material.get",
+    "web.search",
+    "web.open",
+    "market.catalog",
+    "market.snapshot",
+    "market.metrics",
+    "market.series",
+    "personal.catalog",
+    "context.open",
+    "company_wiki_search",
+    "agent.spawn",
+    "agent.wait",
+    "agent.status",
+    "agent.send",
+    "agent.cancel",
+    "agent.resume",
+    "result.get"
+  ],
+  "allowed_child_profiles": [
+    "general",
+    "analyst",
+    "verifier",
+    "skeptic"
+  ],
+  "input_contracts": [
+    "finance.research_task@1"
+  ],
+  "output_contracts": [
+    "finance.research_result@1",
+    "finance.child@1"
+  ],
+  "context_policy": {
+    "history": "task_local",
+    "materials": "explicit_refs",
+    "parent_context": "explicit_only"
+  }
+}

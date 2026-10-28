@@ -1,0 +1,96 @@
+{
+  "schema_version": "finance.h2.agent_scheduling_acceptance.v1",
+  "cases": [
+    {
+      "id": "SCH-01",
+      "scenario": "general_nested_delegation",
+      "business_case_id": "SA-G01",
+      "expected_agents": [
+        {"role": "main", "depth": 0, "parent_role": null},
+        {"role": "general", "depth": 1, "parent_role": "main"},
+        {"role": "general", "depth": 2, "parent_role": "general"}
+      ],
+      "required_events": ["task.spawned", "task.waiting", "task.woken", "result.accepted"],
+      "live_acceptance": {
+        "article_ids": ["article_68b0e26b5532c812eeab"],
+        "expected_role_path_counts": [
+          {"path": ["main"], "min": 1, "max": 1},
+          {"path": ["main", "general"], "min": 1, "max": 1},
+          {"path": ["main", "general", "general"], "min": 1, "max": 1}
+        ],
+        "query": "请对文章 article_68b0e26b5532c812eeab（培风客，2026-10-01《经济和市场综述 - 20261001 - 也许是变盘前夕》）做盲审式论证检查。Root 先读取正文并明确授权给一个 general 子 Agent；该 Agent 再把同一已授权材料交给第二个 general 子 Agent 独立寻找最强反例，随后由第一层 Agent 比较两份分析并形成一份结果。Root 等第一层完成、读取其完整结果后，汇总文章的主要论点、前提、反例和未解决缺口。不要把作者观点写成已证实事实。",
+        "trace_checks": [
+          "Root -> general -> general 的父子路径和深度正确",
+          "正文材料通过显式授权引用逐层传递，不依赖隐式继承",
+          "第一层等待第二层并读取结果后再提交；Root 读取第一层结果后再交付",
+          "Trace 不含完整 Prompt、文章正文或模型隐藏推理"
+        ]
+      }
+    },
+    {
+      "id": "SCH-02",
+      "scenario": "analyst_verifier_review_rounds",
+      "business_case_id": "SA-A03",
+      "expected_agents": [
+        {"role": "main", "depth": 0, "parent_role": null},
+        {"role": "analyst", "depth": 1, "parent_role": "main"},
+        {"role": "verifier", "depth": 2, "parent_role": "analyst"},
+        {"role": "verifier", "depth": 2, "parent_role": "analyst"}
+      ],
+      "required_events": ["task.spawned", "task.waiting", "task.woken", "result.accepted"],
+      "live_acceptance": {
+        "article_ids": ["article_68b0e26b5532c812eeab"],
+        "expected_role_path_counts": [
+          {"path": ["main"], "min": 1, "max": 1},
+          {"path": ["main", "analyst"], "min": 1, "max": 1},
+          {"path": ["main", "analyst", "verifier"], "min": 1, "max": 5}
+        ],
+        "query": "请分析文章 article_68b0e26b5532c812eeab（培风客，2026-10-01《经济和市场综述 - 20261001 - 也许是变盘前夕》）。Root 先读取并授权文章正文，再委派 analyst 专业 Profile；请明确设置 profile_options.review_mode=required，核验范围为 source_fidelity 和 reasoning_conditions。Analyst 要提炼作者观点、推理链、前提及条件；Verifier 必须检查 Analyst 的具体草稿版本和授权原文。Analyst 收到报告后逐项处理意见，再将最终版本和未解决缺口交回 Root。Root 等待并读取 Analyst 的最终结果后交付，不要把未验证的外部事实说成已证实。",
+        "trace_checks": [
+          "Root -> analyst -> verifier 的角色关系正确，Verifier 由 Analyst 流程创建",
+          "Verifier 报告绑定被检查的 draft_ref 和 revision，Analyst 消费报告后交付",
+          "Root 读取 Analyst 最终结果，不以 Verifier 草稿代替最终研究结果",
+          "若出现多轮，轮数不超过 Profile 硬上限且发现项处置完整"
+        ]
+      }
+    },
+    {
+      "id": "SCH-03",
+      "scenario": "sibling_wait_all_and_merge",
+      "expected_agents": [
+        {"role": "main", "depth": 0, "parent_role": null},
+        {"role": "general", "depth": 1, "parent_role": "main"},
+        {"role": "general", "depth": 1, "parent_role": "main"}
+      ],
+      "required_events": ["task.spawned", "task.waiting", "task.woken", "result.accepted"],
+      "live_acceptance": {
+        "article_ids": ["article_68b0e26b5532c812eeab", "article_1699aae292016951b399"],
+        "expected_role_path_counts": [
+          {"path": ["main"], "min": 1, "max": 1},
+          {"path": ["main", "analyst"], "min": 2, "max": 2}
+        ],
+        "query": "请比较两篇文章：article_68b0e26b5532c812eeab（培风客，2026-10-01《经济和市场综述 - 20261001 - 也许是变盘前夕》）与 article_1699aae292016951b399（TT，2026-09-30《金银又遇假期砸盘，背后的原因却不是加息？》）。Root 分别读取两篇正文，然后并行委派两个 analyst：一个只分析培风客文章，另一个只分析 TT 文章；两任务都设置 profile_options.review_mode=off，避免把逐篇核验混入这次并行调度测试。Root 必须等两个任务都完成并读取两份完整结果后，再比较两位作者对黄金、利率及短期波动的判断；清楚区分作者观点与外部事实。",
+        "trace_checks": [
+          "Root 创建两个同级 analyst Task，父任务相同且材料授权各自隔离",
+          "两项工作在 Root 等待前均已派发；wait 覆盖两个 Task",
+          "Root 在最终综合前分别读取两个完整结果",
+          "最终回答保留作者归属和未核实边界"
+        ]
+      }
+    }
+  ],
+  "natural_cases": [
+    {
+      "id": "SCH-04",
+      "scenario": "natural_language_independent_review",
+      "query": "请分析培风客 2026-10-01《经济和市场综述 - 20261001 - 也许是变盘前夕》这篇文章，选出最重要的三条观点，保留作者的推理前提和不确定性。请安排一位独立助手核对总结是否忠于原文、是否遗漏关键条件，收到意见后修订再给我结论。这次只用库内原文，不联网查证外部事实；请说明哪些结论做过原文核对，哪些仍然无法确认。",
+      "evaluation": [
+        "由自然语言需求选择委派方式，不在题目提供角色名、工具名或协议字段",
+        "至少发生一次独立复核，核验意见和原文依据实际回到分析者",
+        "综合前读取所依赖子结果的全文，不能用 summary 读取充当全文读取",
+        "回答包含三条主要观点、前提、不确定性和核验边界",
+        "若选择专业核验，额外检查草稿版本绑定和发现项处置；任务树允许多种合理实现"
+      ]
+    }
+  ]
+}

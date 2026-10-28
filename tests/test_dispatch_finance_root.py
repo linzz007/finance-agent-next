@@ -31,6 +31,7 @@ TOOLS = [
 @pytest.fixture
 def runtime(tmp_path: Path):
     config = SchedulerConfig(
+        budget_policy="hierarchical",
         stream_name="finance-agent-next:fixture:finance-root",
         publish_attempts=2,
         lease_ms=60000,
@@ -183,6 +184,42 @@ def test_finance_state_requires_revision_progress_on_resume():
     assert state.revision == 1
     with pytest.raises(ValueError, match="waiting requires"):
         FinanceStep(status="waiting", state=state)
+    for invalid in ({"wait": Wait(task_ids=["child"])},
+                    {"submission": Submission(result_key="bad", content="bad")}):
+        with pytest.raises(ValueError, match="continuing requires"):
+            FinanceStep(status="continuing", state=state, **invalid)
+
+
+def test_root_continue_restarts_worker_and_restores_state_without_replaying_action(runtime):
+    repo, user, root, transport = runtime
+    seen = []
+
+    async def step(context, _capabilities):
+        seen.append((context.state.phase, context.state.revision))
+        if context.state.phase == "plan":
+            return FinanceStep(status="continuing", state=context.state.model_copy(update={
+                "phase": "research", "revision": 2, "completed_steps": ["durable-action"],
+                "research_plan": {"objective": "preserve original goal"},
+            }))
+        assert context.state.completed_steps == ["durable-action"]
+        assert context.state.research_plan["objective"] == "preserve original goal"
+        return FinanceStep(status="succeeded", state=context.state.model_copy(update={
+            "phase": "delivery", "revision": 3,
+        }), submission=Submission(result_key="done", content="retained result", summary="done"))
+
+    async def run():
+        dispatcher = Dispatcher(repo, transport)
+        dispatcher.publish_batch()
+        await Worker(repo, transport, "first-worker", executor=FinanceRootExecutor(step)).run_once(block_ms=0)
+        assert repo.status(user, [root["task_id"]])["tasks"][0]["status"] == "pending_dispatch"
+        dispatcher.publish_batch()
+        await Worker(repo, transport, "restarted-worker", executor=FinanceRootExecutor(step)).run_once(block_ms=0)
+
+    asyncio.run(run())
+    view = repo.status(user, [root["task_id"]])["tasks"][0]
+    assert view["status"] == "succeeded" and view["budget"]["consumed"] == 0
+    assert [a["status"] for a in view["attempts"]] == ["suspended", "succeeded"]
+    assert seen == [("plan", 1), ("research", 2)]
 
 
 def test_finance_state_revision_must_advance_on_initial_terminal_step(runtime):
@@ -244,4 +281,22 @@ def test_terminal_thread_follow_up_can_start_a_root_task_without_initial_message
 
     assert state.query == "analyze the new question"
     assert state.phase == "plan"
+
+
+def test_terminal_root_followup_preserves_previous_result_as_reference_only():
+    work = type("Work", (), {
+        "brief": {
+            "depth": 0, "role": "main", "previous_task_id": "task.previous",
+            "previous_result_ref": "res_previous", "success_criteria": ["Explain the change"],
+        },
+        "checkpoint": None,
+        "messages": [{"kind": "follow_up", "content": "Reconsider the previous conclusion"}],
+    })()
+    state = asyncio.run(FinanceRootExecutor(lambda *_args: None)._load_state(work, object()))
+    assert state.query == "Reconsider the previous conclusion"
+    assert state.execution["follow_up_context"] == {
+        "previous_task_id": "task.previous", "previous_result_ref": "res_previous",
+        "success_criteria": ["Explain the change"],
+    }
+    assert "res_previous" not in state.execution.get("evidence_refs", [])
 

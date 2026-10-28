@@ -501,6 +501,24 @@ Thread ready/running/waiting 是 Task 的生命周期投影；failed 不抹去�
 
 ### 5.2 预算账本
 
+新建 Run 的现行策略见 [067](../changes/067-h2-independent-call-limits.md)：
+通过独立增量迁移给 h2_budgets 添加可空 self_call_limit，旧行为用 NULL 保留。
+Root 的账本总池为 600，自身上限为 120；每个子/孙自身上限为 60，按实际请求
+从总池转入并扣费，不在 spawn/resume 时预划 60。个人 consumed 不含后代，
+另给 run_budget 展示全树总额。下文的全额预分配规则仅用于历史 hierarchical Run。
+
+增量迁移 `H2-INDEPENDENT-BUDGETS-2026-10-20-v1` 单独校验 checksum，保留上方原始 DDL：
+
+```sql
+ALTER TABLE h2_budgets ADD COLUMN self_call_limit INTEGER
+  CHECK (self_call_limit IS NULL OR self_call_limit > 0);
+```
+
+fixed 子/孙账户的 parent_budget_id 指向 Run 根总池；Task/Thread 的真实父子关系不变。
+每次需要时从根池成对转入 1 次，再扣费；个人 consumed 仅汇总本账户 charge/refund。
+状态里的 allocated=个人上限，不等于预付余额；Root 原始 allocated_calls=总池上限。
+旧 Run 的 self_call_limit=NULL，保留原链式分配、回收和恢复规则以及幂等请求哈希。
+
 预算不在 Task、Thread 和 Attempt 三处复制余额。`budget_ref` 指向同一账户；Thread 是默认策略引用，不凭空多获一份额度。
 
 根 grant 一次；给子任务分配时同一事务写 parent transfer_out 与 child transfer_in，金额相等。调用前 charge 一次，明确未发出才 refund；子任务结束把未用余额 transfer_out 回 parent。每一组 transfer 使用同一个 transaction_key，必须有相等的双边分录，所有账户余额不能为负。

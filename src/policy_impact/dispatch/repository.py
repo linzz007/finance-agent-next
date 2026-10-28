@@ -12,7 +12,12 @@ import secrets
 import time
 from collections.abc import Callable
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
+from zoneinfo import ZoneInfo
+
+from pydantic import ValidationError
 
 from .contracts import (
     TERMINAL,
@@ -22,6 +27,7 @@ from .contracts import (
     DispatchError,
     Lease,
     ModelPolicySet,
+    ResearchClock,
     Resume,
     SchedulerConfig,
     Send,
@@ -29,6 +35,8 @@ from .contracts import (
     Submission,
     Wait,
 )
+from .diagnostics import failure_diagnostic
+from .diagnostics import public_output_normalization as _public_output_normalization
 from .observability import RuntimeRecords
 from .storage import SAFE_ID, Artifact, ArtifactStore, Database, digest, encode, new_id, now_ms
 
@@ -88,14 +96,20 @@ class DispatchRepository:
             for item in value:
                 DispatchRepository._no_secrets(item)
         elif isinstance(value, str):
-            from urllib.parse import urlsplit
-
             if re.search(r"(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+\S+)", value, re.IGNORECASE):
                 raise ValueError("credentials do not belong in snapshots")
             if value.startswith(("http://", "https://")):
                 url = urlsplit(value)
-                if url.username or url.password or url.query:
+                if url.username or url.password:
                     raise ValueError("credential-bearing endpoint")
+                credential_names = {
+                    "api_key", "apikey", "access_token", "auth", "authorization",
+                    "password", "passwd", "secret", "client_secret", "token", "signature", "sig",
+                }
+                for name, _ in parse_qsl(url.query, keep_blank_values=True):
+                    normalized = re.sub(r"[^a-z0-9]+", "_", name.casefold()).strip("_")
+                    if normalized in credential_names or normalized.endswith(("_token", "_secret", "_key")):
+                        raise ValueError("credential-bearing endpoint")
 
     def migrate(self):
         self.db.migrate()
@@ -333,6 +347,82 @@ class DispatchRepository:
         )
         return deadline
 
+    def _fixed_policy(self, c, run_id):
+        root = c.execute(
+            "SELECT t.brief_ref,b.* FROM h2_runs r JOIN h2_tasks t ON t.task_id=r.root_task_id "
+            "JOIN h2_budgets b ON b.budget_id=r.budget_ref WHERE r.run_id=?", (run_id,),
+        ).fetchone()
+        if root["self_call_limit"] is None:
+            return None
+        artifact = self._artifact_rows(c, run_id, [root["brief_ref"]])[0]
+        policy = json.loads(self.artifacts.read(artifact))["budget_policy"]
+        return {**policy, "root_budget_id": root["budget_id"], "run_calls": root["allocated_calls"]}
+
+    @staticmethod
+    def _clock_at(created_at):
+        return {
+            "today": datetime.fromtimestamp(created_at / 1000, ZoneInfo("Asia/Shanghai")).date().isoformat(),
+            "timezone": "Asia/Shanghai",
+        }
+
+    def _research_clock(self, c, run_id):
+        root = c.execute(
+            "SELECT r.created_at,t.brief_ref FROM h2_runs r JOIN h2_tasks t "
+            "ON t.task_id=r.root_task_id WHERE r.run_id=?", (run_id,),
+        ).fetchone()
+        artifact = self._artifact_rows(c, run_id, [root["brief_ref"]])[0]
+        stored = json.loads(self.artifacts.read(artifact))
+        if "research_clock" not in stored:
+            return self._clock_at(root["created_at"])
+        try:
+            return ResearchClock.model_validate(stored["research_clock"]).model_dump()
+        except ValidationError as exc:
+            raise DispatchError("contract_error", "persisted Run research clock is invalid") from exc
+
+    @staticmethod
+    def _self_consumed(c, budget_id):
+        return c.execute(
+            "SELECT COALESCE(-SUM(delta_calls),0) FROM h2_budget_entries "
+            "WHERE budget_id=? AND kind IN ('charge','refund')", (budget_id,),
+        ).fetchone()[0]
+
+    def _run_budget(self, c, run_id):
+        row = c.execute(
+            "SELECT b.* FROM h2_runs r JOIN h2_budgets b ON b.budget_id=r.budget_ref "
+            "WHERE r.run_id=?", (run_id,),
+        ).fetchone()
+        consumed = c.execute(
+            "SELECT COALESCE(-SUM(delta_calls),0) FROM h2_budget_entries "
+            "WHERE run_id=? AND kind IN ('charge','refund')", (run_id,),
+        ).fetchone()[0]
+        return {"limit": row["allocated_calls"], "consumed": consumed,
+                "remaining": row["allocated_calls"] - consumed}
+
+    def _allocate_fixed(self, c, parent, command, budget_id, *, root_task=False):
+        policy = self._fixed_policy(c, parent["run_id"])
+        if command.requested_budget is not None:
+            raise DispatchError("invalid_arguments", "call limits are fixed by Runtime")
+        b = c.execute("SELECT * FROM h2_budgets WHERE budget_id=?", (parent["budget_ref"],)).fetchone()
+        remaining_ms = b["deadline_at"] - b["final_reserve_ms"] - self.clock()
+        duration = command.wall_time_ms
+        if duration is None:
+            duration = min(policy["child_ms"], remaining_ms)
+        if duration <= 0 or duration > remaining_ms:
+            raise DispatchError("budget_denied", "requested duration exceeds parent research budget")
+        run = self._run_budget(c, parent["run_id"])
+        root = c.execute("SELECT * FROM h2_budgets WHERE budget_id=?",
+                         (policy["root_budget_id"],)).fetchone()
+        if run["remaining"] <= root["final_reserve_calls"]:
+            raise DispatchError("budget_denied", details={"scope": "run"})
+        limit = policy["root_task_calls"] if root_task else policy["child_task_calls"]
+        deadline = self.clock() + duration
+        _insert(c, "h2_budgets", budget_id=budget_id, run_id=parent["run_id"],
+                parent_budget_id=policy["root_budget_id"], requested_calls=limit,
+                allocated_calls=limit, self_call_limit=limit, final_reserve_calls=0,
+                allocation_status="granted", deadline_at=deadline,
+                final_reserve_ms=min(policy["child_reserve_ms"], duration // 10), created_at=self.clock())
+        return deadline
+
     def _release_budget(self, c, task):
         b = c.execute(
             "SELECT * FROM h2_budgets WHERE budget_id=?", (task["budget_ref"],)
@@ -342,6 +432,8 @@ class DispatchRepository:
             self._transfer(
                 c, task["run_id"], b["budget_id"], b["parent_budget_id"], count, new_id("release")
             )
+            if b["self_call_limit"] is not None:
+                return
             parent = c.execute(
                 "SELECT * FROM h2_tasks WHERE budget_ref=? ORDER BY rowid DESC LIMIT 1",
                 (b["parent_budget_id"],),
@@ -543,11 +635,18 @@ class DispatchRepository:
         selected_profile: str,
         allowed_profiles: list[str],
         tools: list[str],
+        research_clock: dict | None = None,
+        instruction_rules: dict | None = None,
     ):
         if not SAFE_ID.fullmatch(run_id) or selected_profile not in allowed_profiles:
             raise DispatchError("invalid_arguments")
         if not allowed_profiles or set(allowed_profiles) - self.profiles.keys():
             raise DispatchError("invalid_arguments")
+        if research_clock is not None:
+            try:
+                research_clock = ResearchClock.model_validate(research_clock).model_dump()
+            except ValidationError as exc:
+                raise DispatchError("invalid_arguments", "invalid research clock") from exc
         payload = {
             "run_id": run_id,
             "session_ref": session_ref,
@@ -556,6 +655,8 @@ class DispatchRepository:
             "allowed_profiles": allowed_profiles,
             "tools": tools,
         }
+        if research_clock is not None:
+            payload["research_clock"] = research_clock
         with self.db.connection() as c:
             old = c.execute("SELECT * FROM h2_runs WHERE run_id=?", (run_id,)).fetchone()
             if old:
@@ -563,10 +664,25 @@ class DispatchRepository:
                     run_id, old["root_thread_id"], old["root_task_id"], trusted_user=True
                 )
                 return self._replay(c, caller, "run.create", run_id, payload)
+        now = self.clock()
         query_art = self.artifacts.put(run_id, "query", query.encode())
-        brief = self.artifacts.json(
-            run_id, "brief", {"objective": query, "input_refs": [query_art.artifact_ref]}
-        )
+        brief_payload = {
+            "objective": query, "input_refs": [query_art.artifact_ref],
+            "research_clock": research_clock if research_clock is not None else self._clock_at(now),
+        }
+        if self.config.budget_policy == "fixed":
+            brief_payload["budget_policy"] = {
+                "name": "fixed", "root_task_calls": self.config.root_task_calls,
+                "child_task_calls": self.config.child_task_calls, "child_ms": self.config.child_ms,
+                "child_reserve_ms": self.config.child_reserve_ms,
+            }
+        rules_art = None
+        if instruction_rules is not None:
+            self._no_secrets(instruction_rules)
+            rules_art = self.artifacts.json(run_id, "instruction_rules", instruction_rules)
+            brief_payload["instruction_rules_ref"] = rules_art.artifact_ref
+            brief_payload["instruction_rules_sha256"] = rules_art.sha256
+        brief = self.artifacts.json(run_id, "brief", brief_payload)
         with self.db.connection(write=True) as c:
             old = c.execute("SELECT * FROM h2_runs WHERE run_id=?", (run_id,)).fetchone()
             if old:
@@ -576,7 +692,6 @@ class DispatchRepository:
                 return self._replay(c, caller, "run.create", run_id, payload)
             tid, task_id, budget_id = new_id("thr"), new_id("tsk"), new_id("bud")
             policy_id = new_id("snap")
-            now = self.clock()
             deadline = now + self.config.run_ms
             _insert(
                 c,
@@ -617,6 +732,7 @@ class DispatchRepository:
                 run_id=run_id,
                 requested_calls=self.config.root_calls,
                 allocated_calls=self.config.root_calls,
+                self_call_limit=(self.config.root_task_calls if self.config.budget_policy == "fixed" else None),
                 final_reserve_calls=self.config.root_reserve_calls,
                 allocation_status="granted",
                 deadline_at=deadline,
@@ -642,6 +758,8 @@ class DispatchRepository:
             )
             self._register(c, query_art)
             self._register(c, brief)
+            if rules_art is not None:
+                self._register(c, rules_art)
             _insert(
                 c,
                 "h2_tasks",
@@ -681,16 +799,46 @@ class DispatchRepository:
             )
 
     def spawn(self, caller: CallerContext, request: Spawn):
-        payload = request.model_dump()
         with self.db.connection() as c:
-            replay = self._replay(c, caller, "agent.spawn", request.dispatch_key, payload)
-            if replay:
-                return replay
             parent = self._actor(c, caller)
             thread = self._thread(c, parent["thread_id"])
             self._inputs(c, caller, request.input_refs + request.parent_context_refs)
             permission = self._payload(c, thread["permission_snapshot_ref"])
             policy = self._payload(c, thread["model_policy_ref"])
+            instruction_snapshot = self._run_instruction_rules(c, caller.run_id).get("instruction_rules")
+            from policy_impact.runtime.research_contracts import ReviewPolicy
+
+            from .finance_rules import FinanceRules
+
+            rules = FinanceRules.from_snapshot(instruction_snapshot) if instruction_snapshot else None
+            payload = request.model_dump()
+            for key in ("review_mode", "review_options"):
+                if payload[key] is None:
+                    payload.pop(key)
+            if payload.get("review_policy") is not None and payload["review_policy"].get("instructions") is None:
+                payload["review_policy"].pop("instructions", None)
+            if (rules is not None and rules.has_profiles and not rules.portable_profiles
+                    and request.review_policy is not None):
+                if request.review_policy.instructions is not None:
+                    raise DispatchError("invalid_arguments", "review instructions require the new Profile rules")
+                if "max_rounds" not in request.review_policy.model_fields_set:
+                    payload["review_policy"]["max_rounds"] = 3
+            new_review_controls = request.review_mode is not None or request.review_options is not None
+            if new_review_controls and (rules is None or not rules.portable_profiles):
+                raise DispatchError("invalid_arguments", "review_mode requires the new Profile rules")
+            if (rules is not None and rules.has_profiles and request.role == "analyst"
+                    and request.role_version == "2.0.0" and request.review_policy is None):
+                options = request.review_options.model_dump(exclude_none=True) if request.review_options else {}
+                payload["review_policy"] = ReviewPolicy(
+                    mode=request.review_mode or "auto", max_rounds=options.pop(
+                        "max_rounds", 5 if rules.portable_profiles else 3,
+                    ), **options,
+                ).model_dump(mode="json", exclude_none=True)
+            if request.wall_time_ms is None:
+                payload.pop("wall_time_ms")
+            replay = self._replay(c, caller, "agent.spawn", request.dispatch_key, payload)
+            if replay:
+                return replay
         profile = request.model_profile or policy["selected_profile"]
         brief = self.artifacts.json(
             caller.run_id,
@@ -712,11 +860,81 @@ class DispatchRepository:
             run = self._open(c, parent)
             if parent["status"] in TERMINAL or parent["status"] == "waiting":
                 raise DispatchError("invalid_state")
+            current_thread = self._thread(c, parent["thread_id"])
+            if current_thread["model_policy_ref"] != thread["model_policy_ref"]:
+                raise DispatchError(
+                    "state_conflict", "parent model policy changed while preparing child; retry command"
+                )
             if thread["depth"] >= 2:
                 raise DispatchError("depth_exceeded")
             role_key = f"{request.role}@{request.role_version}"
             if role_key not in self.roles or role_key not in permission["roles"]:
                 raise DispatchError("forbidden")
+            current_rules_snapshot = self._run_instruction_rules(c, caller.run_id).get("instruction_rules")
+            if current_rules_snapshot != instruction_snapshot:
+                raise DispatchError("state_conflict", "Run instruction snapshot changed while spawning")
+            if rules is not None and rules.has_profiles:
+                if thread["depth"] == 0:
+                    permitted_children = set(rules.allowed_root_children())
+                else:
+                    permitted_children = set(
+                        rules.role_profile(thread["role"], thread["role_version"])["allowed_child_profiles"]
+                    )
+                if request.role not in permitted_children:
+                    raise DispatchError("forbidden", "parent Profile cannot spawn this child role")
+                target_profile = rules.role_profile(request.role, request.role_version)
+                output_key = f"{request.output_contract.name}@{request.output_contract.version}"
+                if output_key not in target_profile["output_contracts"]:
+                    raise DispatchError("invalid_arguments", "output contract is not registered for this Profile")
+                if request.role == "analyst" and request.role_version == "2.0.0":
+                    if "finance.analyst_result@2" not in target_profile["output_contracts"]:
+                        raise DispatchError("contract_error", "Analyst v2 result contract is not registered")
+                    if output_key != "finance.analyst_result@2":
+                        raise DispatchError("invalid_arguments", "Analyst v2 requires finance.analyst_result@2")
+                    if request.review_request is not None:
+                        raise DispatchError("invalid_arguments", "Analyst tasks cannot receive a verifier ReviewRequest")
+                    if payload.get("review_policy") is None:
+                        raise DispatchError("contract_error", "Analyst v2 requires a ReviewPolicy")
+                elif request.review_policy is not None or new_review_controls:
+                    raise DispatchError("invalid_arguments", "ReviewPolicy is valid only for Analyst v2")
+                if request.review_request is not None:
+                    if request.role != "verifier" or output_key != "finance.review_report@1":
+                        raise DispatchError("invalid_arguments", "ReviewRequest requires the Verifier report contract")
+                    if "finance.review_request@1" not in target_profile["input_contracts"]:
+                        raise DispatchError("contract_error", "Verifier ReviewRequest contract is not registered")
+                    granted_refs = set(request.input_refs + request.parent_context_refs)
+                    review_request = request.review_request
+                    required_refs = {review_request.draft_ref}
+                    required_refs.update(ref for target in review_request.targets for ref in target.evidence_refs)
+                    if not required_refs <= granted_refs:
+                        raise DispatchError("invalid_arguments", "ReviewRequest references are not explicit task inputs")
+                    if thread["role"] != "analyst":
+                        raise DispatchError("forbidden", "only an Analyst may create an article review task")
+                    parent_brief_row = self._artifact_rows(c, caller.run_id, [parent["brief_ref"]])[0]
+                    parent_brief = json.loads(self.artifacts.read(parent_brief_row))
+                    review_policy = parent_brief.get("review_policy") or payload.get("review_policy")
+                    review_policy = ReviewPolicy.model_validate(review_policy or {}, strict=True)
+                    if review_policy.mode == "off":
+                        raise DispatchError("forbidden", "article review is disabled by the task policy")
+                    prior_review_rows = c.execute(
+                        "SELECT t.brief_ref FROM h2_tasks t JOIN h2_threads th ON th.thread_id=t.thread_id "
+                        "WHERE t.parent_task_id=? AND th.role='verifier'",
+                        (caller.task_id,),
+                    ).fetchall()
+                    review_count = 0
+                    for row in prior_review_rows:
+                        child_brief = self._artifact_rows(c, caller.run_id, [row["brief_ref"]])[0]
+                        try:
+                            if json.loads(self.artifacts.read(child_brief)).get("review_request") is not None:
+                                review_count += 1
+                        except (TypeError, ValueError):
+                            raise DispatchError("checkpoint_invalid", "invalid existing review TaskBrief")
+                    if (review_request.round_number != review_count + 1
+                            or review_request.round_number > review_policy.max_rounds
+                            or review_request.round_number > 5):
+                        raise DispatchError("depth_exceeded", "review round limit reached")
+                elif request.role == "verifier" and output_key == "finance.review_report@1":
+                    raise DispatchError("invalid_arguments", "review report task requires a ReviewRequest")
             current_policy = self._payload(c, run["model_policy_ref"])
             if (
                 profile not in policy["allowed_profiles"]
@@ -739,16 +957,24 @@ class DispatchRepository:
                     raise DispatchError("invalid_arguments", "child cannot depend on its parent")
             self._inputs(c, caller, request.input_refs + request.parent_context_refs)
             tid, task_id, budget_id = new_id("thr"), new_id("tsk"), new_id("bud")
-            deadline = self._allocate(c, parent, request.requested_budget, budget_id)
+            if self._fixed_policy(c, caller.run_id):
+                deadline = self._allocate_fixed(c, parent, request, budget_id)
+            else:
+                if request.requested_budget is None:
+                    raise DispatchError("invalid_arguments", "requested_budget is required for this Run")
+                deadline = self._allocate(c, parent, request.requested_budget, budget_id)
             child_policy = self._snapshot(
                 c, caller.run_id, "model_policy", {**policy, "selected_profile": profile}
             )
+            child_tools = set(permission["tools"]) & set(self.roles[role_key])
+            if rules is not None and rules.has_profiles:
+                child_tools &= set(target_profile["allowed_tools"])
             child_permission = self._snapshot(
                 c,
                 caller.run_id,
                 "permission",
                 {
-                    "tools": sorted(set(permission["tools"]) & set(self.roles[role_key])),
+                    "tools": sorted(child_tools),
                     "roles": permission["roles"],
                 },
             )
@@ -837,7 +1063,17 @@ class DispatchRepository:
                     "status": initial_status,
                     "dispatch_state": initial_status,
                     "result_ref": None,
-                    "allocated_budget": request.requested_budget.model_dump(),
+                    "allocated_budget": (
+                        request.requested_budget.model_dump()
+                        if request.requested_budget is not None
+                        else {
+                            "model_calls": c.execute(
+                                "SELECT self_call_limit FROM h2_budgets WHERE budget_id=?",
+                                (budget_id,),
+                            ).fetchone()[0],
+                            "wall_time_ms": deadline - self.clock(),
+                        }
+                    ),
                     "deadline_at": deadline,
                 },
             )
@@ -847,6 +1083,28 @@ class DispatchRepository:
             thread = self._thread(c, caller.thread_id)
             if tool not in self._payload(c, thread["permission_snapshot_ref"])["tools"]:
                 raise DispatchError("forbidden")
+
+    def record_tool(self, lease: Lease, name, action_key, status, artifact_ref=None):
+        if (
+            any(not isinstance(value, str) or not SAFE_ID.fullmatch(value)
+                for value in (name, action_key))
+            or not isinstance(status, str)
+            or status not in {"started", "succeeded", "failed"}
+            or artifact_ref is not None
+            and (not isinstance(artifact_ref, str) or not SAFE_ID.fullmatch(artifact_ref))
+        ):
+            raise DispatchError("invalid_arguments")
+        caller = lease.caller()
+        with self.db.connection(write=True) as c:
+            task, _ = self._fence(c, caller)
+            self._tool_permission(c, caller, name)
+            if artifact_ref is not None:
+                self._inputs(c, caller, [artifact_ref])
+            return self._event(
+                c, task, "tool.started" if status == "started" else "tool.completed",
+                {"name": name, "action_key": action_key, "attempt_id": lease.attempt_id,
+                 "status": status, "observation_ref": artifact_ref},
+            )
 
     def set_model_policy(self, caller: CallerContext, request: ModelPolicySet):
         payload = request.model_dump()
@@ -1057,7 +1315,6 @@ class DispatchRepository:
                 if prior["attempt_id"] != lease.attempt_id:
                     raise DispatchError("idempotency_conflict")
                 return dict(prior)
-            thread = self._thread(c, task["thread_id"])
             run = c.execute("SELECT * FROM h2_runs WHERE run_id=?", (task["run_id"],)).fetchone()
             profile = self._payload(c, attempt["model_snapshot_ref"])["profile"]
             if profile not in self._payload(c, run["model_policy_ref"])["allowed_profiles"]:
@@ -1066,6 +1323,19 @@ class DispatchRepository:
                 "SELECT * FROM h2_budgets WHERE budget_id=?", (task["budget_ref"],)
             ).fetchone()
             reserve = 0 if final else budget["final_reserve_calls"]
+            if budget["self_call_limit"] is not None:
+                if self._self_consumed(c, budget["budget_id"]) >= budget["self_call_limit"]:
+                    raise DispatchError("budget_denied", details={"scope": "task"})
+                run_budget = self._run_budget(c, task["run_id"])
+                policy = self._fixed_policy(c, task["run_id"])
+                pool = c.execute("SELECT * FROM h2_budgets WHERE budget_id=?",
+                                 (policy["root_budget_id"],)).fetchone()
+                run_reserve = pool["final_reserve_calls"] if budget["parent_budget_id"] else reserve
+                if run_budget["remaining"] <= run_reserve:
+                    raise DispatchError("budget_denied", details={"scope": "run"})
+                if budget["parent_budget_id"] and self._balance(c, budget["budget_id"]) == 0:
+                    self._transfer(c, task["run_id"], policy["root_budget_id"],
+                                   budget["budget_id"], 1, call_id)
             if self._balance(c, budget["budget_id"]) <= reserve:
                 raise DispatchError("budget_denied")
             if not final and self.clock() >= task["deadline_at"] - budget["final_reserve_ms"]:
@@ -1077,7 +1347,7 @@ class DispatchRepository:
                 run_id=task["run_id"],
                 task_id=task["task_id"],
                 attempt_id=lease.attempt_id,
-                budget_id=thread["budget_ref"],
+                budget_id=budget["budget_id"],
                 model_snapshot_ref=attempt["model_snapshot_ref"],
                 status="reserved",
             )
@@ -1087,7 +1357,18 @@ class DispatchRepository:
 
     def call_started(self, lease: Lease, call_id: str):
         with self.db.connection(write=True) as c:
-            self._fence(c, lease.caller())
+            task, attempt = self._fence(c, lease.caller())
+            call = c.execute(
+                "SELECT status FROM h2_model_calls WHERE call_id=? AND attempt_id=?",
+                (call_id, lease.attempt_id),
+            ).fetchone()
+            if call is None or call["status"] != "reserved":
+                raise DispatchError("invalid_state", "physical request already started")
+            # Reservation is not authorization to send after a user revocation.
+            run = c.execute("SELECT model_policy_ref FROM h2_runs WHERE run_id=?", (task["run_id"],)).fetchone()
+            profile = self._payload(c, attempt["model_snapshot_ref"])["profile"]
+            if profile not in self._payload(c, run["model_policy_ref"])["allowed_profiles"]:
+                raise DispatchError("forbidden")
             n = c.execute(
                 "UPDATE h2_model_calls SET status='started',started_at=? WHERE call_id=? "
                 "AND attempt_id=? AND status='reserved'",
@@ -1097,9 +1378,11 @@ class DispatchRepository:
                 raise DispatchError("invalid_state", "physical request already started")
 
     def call_finished(self, lease: Lease, call_id: str, *, status: str, usage=None,
-                      error_code=None, output_ref=None, provider_request_id=""):
+                      error_code=None, output_ref=None, provider_request_id="",
+                      public_output_normalization=None):
         if status not in {"succeeded", "failed", "unknown"}:
             raise ValueError("invalid call outcome")
+        normalization = _public_output_normalization(public_output_normalization)
         with self.db.connection(write=True) as c:
             # Late usage is audit-only and may not publish a Task result.
             row = c.execute(
@@ -1123,11 +1406,14 @@ class DispatchRepository:
                 self._event(c, self._task(c, lease.task_id), "model.call_finished", {
                     "call_id": call_id, "status": status, "error_code": error_code,
                     "output_ref": output_ref, "provider_request_id": provider_request_id,
+                    **({"public_output_normalization": normalization} if normalization else {}),
                 })
 
     def refund_unsent_call(self, lease: Lease, call_id: str):
         with self.db.connection(write=True) as c:
-            task, _ = self._fence(c, lease.caller())
+            # Audit settlement may outlive execution authority, but must retain
+            # the original identity/token and never make a started call unsent.
+            task = self._actor(c, lease.caller())
             row = c.execute(
                 "SELECT * FROM h2_model_calls WHERE call_id=? AND attempt_id=?",
                 (call_id, lease.attempt_id),
@@ -1137,15 +1423,21 @@ class DispatchRepository:
             ).fetchone()
             if row and refunded and row["error_code"] == "not_sent":
                 return
-            if not row or row["status"] != "reserved":
+            if (
+                not row
+                or row["status"] not in {"reserved", "unknown"}
+                or row["started_at"] is not None
+            ):
                 raise DispatchError("invalid_state")
             if not refunded:
-                self._entry(c, task["run_id"], task["budget_ref"], call_id, "refund", 1, call_id)
+                self._entry(c, task["run_id"], row["budget_id"], call_id, "refund", 1, call_id)
                 c.execute(
                     "UPDATE h2_model_calls SET status='failed',error_code='not_sent',finished_at=? "
                     "WHERE call_id=?",
                     (self.clock(), call_id),
                 )
+                if task["status"] in TERMINAL:
+                    self._release_budget(c, task)
 
     def _checkpoint_art(self, caller, state: CheckpointState):
         with self.db.connection() as c:
@@ -1224,16 +1516,17 @@ class DispatchRepository:
         with self.db.connection(write=True) as c:
             return self._save_checkpoint(c, lease.caller(), state, art)
 
-    def _terminate(self, c, task, status, error=None):
+    def _terminate(self, c, task, status, error=None, *, diagnostic=None):
         if task["status"] in TERMINAL:
             return
         attempt_status = "cancelled" if status == "cancelled" else "failed"
         if status == "succeeded":
             attempt_status = "succeeded"
         c.execute(
-            "UPDATE h2_attempts SET status=?,finished_at=?,error_code=? "
+            "UPDATE h2_attempts SET status=?,finished_at=?,error_code=?,error_message=? "
             "WHERE attempt_id=? AND status IN ('queued','leased','running','suspended')",
-            (attempt_status, self.clock(), error, task["current_attempt_id"]),
+            (attempt_status, self.clock(), error,
+             diagnostic["message"] if diagnostic else None, task["current_attempt_id"]),
         )
         c.execute(
             "UPDATE h2_tasks SET status=?,finished_at=?,updated_at=?,row_version=row_version+1 "
@@ -1253,7 +1546,9 @@ class DispatchRepository:
             (task["current_attempt_id"],),
         )
         self._release_budget(c, task)
-        self._event(c, task, f"task.{status}", {"error_code": error})
+        self._event(c, task, f"task.{status}",
+                    {"attempt_id": task["current_attempt_id"], **diagnostic}
+                    if diagnostic else {"error_code": error})
         run = c.execute("SELECT * FROM h2_runs WHERE run_id=?", (task["run_id"],)).fetchone()
         if run["root_task_id"] == task["task_id"]:
             c.execute(
@@ -1262,7 +1557,14 @@ class DispatchRepository:
             )
         self._wake(c, changed_task_ids=[task["task_id"]])
 
-    def fail(self, lease: Lease, error_code: str, *, retryable=False):
+    @staticmethod
+    def _failed_attempt_count(c, task_id: str) -> int:
+        return c.execute(
+            "SELECT count(*) FROM h2_attempts WHERE task_id=? AND status IN ('failed','expired')",
+            (task_id,),
+        ).fetchone()[0]
+
+    def fail(self, lease: Lease, error_code: str, *, retryable=False, details=None):
         if error_code not in {
             "transport_error",
             "provider_error",
@@ -1271,29 +1573,33 @@ class DispatchRepository:
             "timeout",
             "outcome_unknown",
             "internal_error",
+            "checkpoint_invalid",
+            "artifact_unavailable",
+            "budget_denied",
+            "forbidden",
         }:
             raise ValueError("unknown execution error")
         with self.db.connection(write=True) as c:
             task, attempt = self._fence(c, lease.caller())
-            if (
-                retryable
-                and error_code == "transport_error"
-                and attempt["attempt_no"] < self.config.max_attempts
-            ):
+            diagnostic = failure_diagnostic(error_code, details)
+            may_retry = retryable and error_code == "transport_error"
+            if may_retry:
                 c.execute(
-                    "UPDATE h2_attempts SET status='failed',error_code=?,finished_at=? WHERE attempt_id=?",
-                    (error_code, self.clock(), lease.attempt_id),
+                    "UPDATE h2_attempts SET status='failed',error_code=?,error_message=?,finished_at=? WHERE attempt_id=?",
+                    (error_code, diagnostic["message"], self.clock(), lease.attempt_id),
                 )
                 c.execute(
                     "UPDATE h2_model_calls SET status='unknown' WHERE attempt_id=? AND status IN ('started','reserved')",
                     (lease.attempt_id,),
                 )
+            # Durable wait/resume advances attempt_no without a failed execution.
+            if may_retry and self._failed_attempt_count(c, lease.task_id) < self.config.max_attempts:
                 self._attempt(
                     c, task, attempt["checkpoint_ref"] or attempt["resume_checkpoint_ref"]
                 )
                 self._event(c, task, "attempt.transport_retry", {"attempt_id": lease.attempt_id})
             else:
-                self._terminate(c, task, "failed", error_code)
+                self._terminate(c, task, "failed", error_code, diagnostic=diagnostic)
 
     def cancel(self, caller: CallerContext, request: Cancel):
         payload = request.model_dump()
@@ -1417,6 +1723,14 @@ class DispatchRepository:
             if task["status"] not in {"failed", "partial", "timed_out"}:
                 raise DispatchError("invalid_state")
             thread = self._thread(c, task["thread_id"])
+            if thread["status"] == "closed":
+                raise DispatchError("invalid_state")
+            if c.execute(
+                "SELECT 1 FROM h2_tasks WHERE thread_id=? AND task_id<>? "
+                "AND status NOT IN ('succeeded','partial','failed','cancelled','timed_out')",
+                (thread["thread_id"], task["task_id"]),
+            ).fetchone():
+                raise DispatchError("thread_busy")
             policy = self._payload(c, thread["model_policy_ref"])
             if request.model_profile and request.model_profile != policy["selected_profile"]:
                 if not caller.trusted_user:
@@ -1443,12 +1757,23 @@ class DispatchRepository:
                 "SELECT * FROM h2_budgets WHERE budget_id=?", (task["budget_ref"],)
             ).fetchone()
             view = self._budget_view(c, budget["budget_id"])
-            needed = budget["allocated_calls"] - view["consumed"]
+            needed = (budget["self_call_limit"] or budget["allocated_calls"]) - view["consumed"]
             if needed <= 0:
                 raise DispatchError("budget_denied")
-            if budget["parent_budget_id"]:
+            if budget["self_call_limit"] is not None:
+                if view["local_available"] <= 0:
+                    raise DispatchError("budget_denied", details={"scope": "run"})
+            elif budget["parent_budget_id"]:
                 local = self._balance(c, budget["budget_id"])
                 missing = max(0, needed - view["delegated"] - local)
+                parent_budget = c.execute(
+                    "SELECT * FROM h2_budgets WHERE budget_id=?", (budget["parent_budget_id"],)
+                ).fetchone()
+                available = max(
+                    0, self._balance(c, parent_budget["budget_id"]) - parent_budget["final_reserve_calls"]
+                )
+                if missing > available:
+                    raise DispatchError("budget_denied")
                 self._transfer(
                     c,
                     caller.run_id,
@@ -1457,6 +1782,10 @@ class DispatchRepository:
                     missing,
                     new_id("resume_budget"),
                 )
+            c.execute(
+                "UPDATE h2_threads SET budget_ref=?,status='ready',updated_at=? WHERE thread_id=?",
+                (task["budget_ref"], self.clock(), thread["thread_id"]),
+            )
             aid = self._attempt(c, task, checkpoint["checkpoint_ref"])
             self._event(
                 c,
@@ -1481,20 +1810,30 @@ class DispatchRepository:
                 },
             )
 
+    @staticmethod
+    def _message_target(c, thread_id):
+        # Resuming an older Task can make it current without changing created_at.
+        task = c.execute(
+            "SELECT * FROM h2_tasks WHERE thread_id=? "
+            "ORDER BY status IN ('succeeded','partial','failed','cancelled','timed_out'),"
+            "created_at DESC,rowid DESC LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        if task is None:
+            raise DispatchError("not_found")
+        return task
+
     def send(self, caller: CallerContext, request: Send):
         payload = request.model_dump()
+        if request.follow_up is not None and request.follow_up.wall_time_ms is None:
+            payload["follow_up"].pop("wall_time_ms")
         with self.db.connection() as c:
             replay = self._replay(c, caller, "agent.send", request.idempotency_key, payload)
             if replay:
                 return replay
             self._actor(c, caller)
             th = self._thread(c, request.thread_id)
-            latest = c.execute(
-                "SELECT * FROM h2_tasks WHERE thread_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
-                (th["thread_id"],),
-            ).fetchone()
-            if latest is None:
-                raise DispatchError("not_found")
+            latest = self._message_target(c, th["thread_id"])
             self._access(c, caller, latest["task_id"])
             if request.content_ref:
                 self._inputs(c, caller, [request.content_ref])
@@ -1521,10 +1860,7 @@ class DispatchRepository:
             self._actor(c, caller, write=True)
             self._tool_permission(c, caller, "agent.send")
             th = self._thread(c, request.thread_id)
-            task = c.execute(
-                "SELECT * FROM h2_tasks WHERE thread_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
-                (th["thread_id"],),
-            ).fetchone()
+            task = self._message_target(c, th["thread_id"])
             if task["task_id"] != latest["task_id"] or task["result_ref"] != latest["result_ref"]:
                 raise DispatchError(
                     "state_conflict", "Thread changed while preparing follow-up; retry command"
@@ -1558,7 +1894,13 @@ class DispatchRepository:
                 )
                 self._open(c, parent)
                 budget_id, task_id = new_id("bud"), new_id("tsk")
-                deadline = self._allocate(c, parent, request.follow_up.requested_budget, budget_id)
+                if self._fixed_policy(c, caller.run_id):
+                    deadline = self._allocate_fixed(c, parent, request.follow_up, budget_id,
+                                                    root_task=task["parent_task_id"] is None)
+                else:
+                    if request.follow_up.requested_budget is None:
+                        raise DispatchError("invalid_arguments", "requested_budget is required for this Run")
+                    deadline = self._allocate(c, parent, request.follow_up.requested_budget, budget_id)
                 self._register(c, brief)
                 _insert(
                     c,
@@ -1625,15 +1967,47 @@ class DispatchRepository:
                 seen.add(node)
                 todo.extend(edges.get(node, ()))
 
-    def suspend(self, lease: Lease, state: CheckpointState, request: Wait | None = None):
+    def continue_task(self, lease: Lease, state: CheckpointState):
         art = self._checkpoint_art(lease.caller(), state)
         with self.db.connection(write=True) as c:
             task, _ = self._fence(c, lease.caller())
-            if request:
-                self._tool_permission(c, lease.caller(), "agent.wait")
-                for target in request.task_ids:
-                    self._access(c, lease.caller(), target)
-                self._wait_cycle(c, task["task_id"], request.task_ids)
+            ref = self._save_checkpoint(c, lease.caller(), state, art)
+            c.execute(
+                "UPDATE h2_attempts SET status='suspended',finished_at=? WHERE attempt_id=?",
+                (self.clock(), lease.attempt_id),
+            )
+            successor = self._attempt(c, task, ref)
+            c.execute("UPDATE h2_threads SET status='ready' WHERE thread_id=?", (lease.thread_id,))
+            self._event(c, task, "task.continued", {
+                "previous_attempt_id": lease.attempt_id,
+                "attempt_id": successor,
+                "checkpoint_ref": ref,
+            })
+            return successor
+
+    def _validate_wait(self, c, lease: Lease, request: Wait | None):
+        caller = lease.caller()
+        task, _ = self._fence(c, caller)
+        run = c.execute("SELECT deadline_at FROM h2_runs WHERE run_id=?", (lease.run_id,)).fetchone()
+        deadline = min(task["deadline_at"], run["deadline_at"])
+        if request is not None:
+            self._tool_permission(c, caller, "agent.wait")
+            for target in request.task_ids:
+                self._access(c, caller, target)
+            self._wait_cycle(c, task["task_id"], request.task_ids)
+            deadline = min(deadline, self.clock() + request.timeout_ms)
+        return task, deadline
+
+    def validate_wait(self, lease: Lease, request: Wait):
+        """Preflight only; suspend rechecks the same rules in its write transaction."""
+        with self.db.connection() as c:
+            _, deadline = self._validate_wait(c, lease, request)
+            return deadline
+
+    def suspend(self, lease: Lease, state: CheckpointState, request: Wait | None = None):
+        art = self._checkpoint_art(lease.caller(), state)
+        with self.db.connection(write=True) as c:
+            task, deadline = self._validate_wait(c, lease, request)
             ref = self._save_checkpoint(c, lease.caller(), state, art)
             wid = new_id("wait")
             _insert(
@@ -1647,9 +2021,7 @@ class DispatchRepository:
                 mode=request.mode if request else "all",
                 status="waiting",
                 after_event_id=int(request.after_event_id) if request else int(state.last_event_id),
-                deadline_at=min(task["deadline_at"], self.clock() + request.timeout_ms)
-                if request
-                else task["deadline_at"],
+                deadline_at=deadline,
                 checkpoint_ref=ref,
                 created_at=self.clock(),
             )
@@ -1745,6 +2117,25 @@ class DispatchRepository:
             refs = self._artifact_rows(c, lease.run_id, [r["payload_ref"] for r in rows])
         return [{**dict(r), "content": self.artifacts.read(a).decode()} for r, a in zip(rows, refs)]
 
+    def _run_instruction_rules(self, c, run_id):
+        root = c.execute(
+            "SELECT t.brief_ref FROM h2_runs r JOIN h2_tasks t ON t.task_id=r.root_task_id "
+            "WHERE r.run_id=?", (run_id,),
+        ).fetchone()
+        brief_row = self._artifact_rows(c, run_id, [root["brief_ref"]])[0]
+        try:
+            brief = json.loads(self.artifacts.read(brief_row))
+            if not {"instruction_rules_ref", "instruction_rules_sha256"}.intersection(brief):
+                return {}
+            ref = brief["instruction_rules_ref"]
+            rules_row = self._artifact_rows(c, run_id, [ref])[0]
+            if rules_row["kind"] != "instruction_rules" or rules_row["sha256"] != brief["instruction_rules_sha256"]:
+                raise ValueError("rule artifact identity changed")
+            return {"instruction_rules_ref": ref,
+                    "instruction_rules": json.loads(self.artifacts.read(rules_row))}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DispatchError("checkpoint_invalid", "invalid Run instruction snapshot") from exc
+
     def execution_input(self, lease: Lease, *, context_accepts=None):
         with self.db.connection() as c:
             task, attempt = self._fence(c, lease.caller())
@@ -1777,6 +2168,8 @@ class DispatchRepository:
                 "model_snapshot_ref": attempt["model_snapshot_ref"],
                 "budget": self._budget_view(c, task["budget_ref"]),
                 "deadline_at": task["deadline_at"],
+                "research_clock": self._research_clock(c, lease.run_id),
+                **self._run_instruction_rules(c, lease.run_id),
             }
             waits = c.execute(
                 "SELECT * FROM h2_waits WHERE owner_task_id=? AND checkpoint_ref=? "
@@ -1798,8 +2191,12 @@ class DispatchRepository:
             self._checkpoint_for_resume(
                 lease.caller(), lease.task_id, attempt["resume_checkpoint_ref"]
             )
+        stored_brief = json.loads(self.artifacts.read(brief))
+        follow_up = stored_brief.get("follow_up")
+        if isinstance(follow_up, dict):
+            stored_brief["success_criteria"] = follow_up["success_criteria"]
         data = {
-            "brief": {**json.loads(self.artifacts.read(brief)), **runtime_brief},
+            "brief": {**stored_brief, **runtime_brief},
             "checkpoint": json.loads(self.artifacts.read(ckpt)) if ckpt else None,
             "model": model,
             "messages": self.mailbox(lease),
@@ -1820,10 +2217,11 @@ class DispatchRepository:
                 task["result"] = {**summary, "envelope": envelope, "full_injected": False}
                 with self.db.connection() as c:
                     result = c.execute(
-                        "SELECT a.* FROM h2_results r JOIN h2_artifacts a "
+                        "SELECT a.*,r.sections_json FROM h2_results r JOIN h2_artifacts a "
                         "ON a.artifact_ref=r.full_ref WHERE r.result_ref=?",
                         (task["result_ref"],),
                     ).fetchone()
+                task["result"]["section_refs"] = json.loads(result["sections_json"])
                 if context_accepts is not None and result["byte_length"] <= 16 * 1024:
                     short_candidates.append((task, result))
         # Check the complete mandatory input before considering any optional full text.
@@ -2029,6 +2427,21 @@ class DispatchRepository:
 
     def _budget_view(self, c, budget_id):
         b = c.execute("SELECT * FROM h2_budgets WHERE budget_id=?", (budget_id,)).fetchone()
+        if b["self_call_limit"] is not None:
+            consumed = self._self_consumed(c, budget_id)
+            remaining = b["self_call_limit"] - consumed
+            run = self._run_budget(c, b["run_id"])
+            policy = self._fixed_policy(c, b["run_id"])
+            reserve = 0
+            if b["parent_budget_id"]:
+                reserve = c.execute("SELECT final_reserve_calls FROM h2_budgets WHERE budget_id=?",
+                                    (policy["root_budget_id"],)).fetchone()[0]
+            return {"policy": "fixed", "requested": b["self_call_limit"],
+                    "allocated": b["self_call_limit"], "self_call_limit": b["self_call_limit"],
+                    "consumed": consumed, "remaining": remaining,
+                    "local_available": min(remaining, max(0, run["remaining"] - reserve)), "delegated": 0,
+                    "run_budget": run, "child_task_calls": policy["child_task_calls"],
+                    "exact_cost_limit": False}
         ids = [
             r[0]
             for r in c.execute(
@@ -2108,7 +2521,7 @@ class DispatchRepository:
             for task_id in selected_task_ids:
                 t = self._access(c, caller, task_id)
                 attempts = c.execute(
-                    "SELECT attempt_id,attempt_no,status,error_code,model_snapshot_ref,"
+                    "SELECT attempt_id,attempt_no,status,error_code,error_message,model_snapshot_ref,"
                     "started_at,finished_at FROM h2_attempts WHERE task_id=? ORDER BY attempt_no",
                     (task_id,),
                 ).fetchall()
@@ -2130,6 +2543,16 @@ class DispatchRepository:
                         "budget": self._budget_view(c, t["budget_ref"]),
                     }
                 )
+                if t["status"] == "failed":
+                    failure = c.execute(
+                        "SELECT payload_json FROM h2_events WHERE run_id=? AND aggregate_id=? "
+                        "AND event_type='task.failed' ORDER BY event_id DESC LIMIT 1",
+                        (caller.run_id, task_id),
+                    ).fetchone()
+                    if failure:
+                        diagnostic = json.loads(failure[0])
+                        if diagnostic.get("attempt_id") == t["current_attempt_id"]:
+                            tasks[-1]["failure_diagnostic"] = diagnostic
             rows = c.execute(
                 "SELECT * FROM h2_events WHERE run_id=? AND event_id>? ORDER BY event_id LIMIT ?",
                 (caller.run_id, int(after_event_id), max_events + 1),
@@ -2232,6 +2655,7 @@ class DispatchRepository:
             )
             if not ref:
                 raise DispatchError("not_found")
+            readable_sections = refs
             try:
                 self._access(c, caller, row["task_id"])
             except DispatchError:
@@ -2240,6 +2664,7 @@ class DispatchRepository:
                 granted = set(json.loads(self._task(c, caller.task_id)["input_refs_json"]))
                 if ref not in granted:
                     raise DispatchError("not_found") from None
+                readable_sections = {name: value for name, value in refs.items() if value in granted}
             self._inputs(c, caller, [ref])
             art = self._artifact_rows(c, caller.run_id, [ref])[0]
         content = self.artifacts.read(art).decode()
@@ -2253,6 +2678,8 @@ class DispatchRepository:
                 "result_ref": result_ref,
                 "reader_attempt_id": caller.attempt_id,
                 "reader_thread_id": caller.thread_id,
+                "reader_task_id": caller.task_id,
+                "reader_kind": "user" if caller.trusted_user else "agent",
                 "view": view,
                 "section": section,
                 "start": offset,
@@ -2260,35 +2687,39 @@ class DispatchRepository:
             }
             self._event(c, task, "result.page_viewed", identity)
             intervals = [(offset, end)]
+            scope = {key: identity[key] for key in (
+                "result_ref", "reader_thread_id", "reader_task_id", "reader_kind", "view", "section",
+            )}
+            completion_type = f"result.{view}_viewed"
+            completion_seen = False
             for event in c.execute(
-                "SELECT payload_json FROM h2_events WHERE run_id=? AND event_type='result.page_viewed'",
-                (caller.run_id,),
+                "SELECT e.payload_json,e.event_type,a.task_id AS legacy_task_id,"
+                "t.thread_id AS legacy_thread_id FROM h2_events e "
+                "LEFT JOIN h2_attempts a ON a.attempt_id=json_extract(e.payload_json,'$.reader_attempt_id') "
+                "LEFT JOIN h2_tasks t ON t.task_id=a.task_id AND t.run_id=e.run_id "
+                "WHERE e.run_id=? AND e.event_type IN ('result.page_viewed',?) "
+                "AND json_extract(e.payload_json,'$.result_ref')=? "
+                "AND json_extract(e.payload_json,'$.reader_thread_id')=?",
+                (caller.run_id, completion_type, result_ref, caller.thread_id),
             ):
-                p = json.loads(event[0])
-                if all(
-                    p.get(k) == identity[k]
-                    for k in (
-                        "result_ref",
-                        "reader_attempt_id",
-                        "reader_thread_id",
-                        "view",
-                        "section",
-                    )
-                ):
-                    intervals.append((p["start"], p["end"]))
+                p = json.loads(event["payload_json"])
+                if "reader_task_id" not in p:
+                    # Recover old Agent records from identity, never from a user's export.
+                    if not event["legacy_task_id"] or event["legacy_thread_id"] != p.get("reader_thread_id"):
+                        continue
+                    p.update(reader_task_id=event["legacy_task_id"], reader_kind="agent")
+                if all(p.get(key) == value for key, value in scope.items()):
+                    if event["event_type"] == completion_type:
+                        completion_seen = True
+                    else:
+                        intervals.append((p["start"], p["end"]))
             covered = 0
             for start, stop in sorted(intervals):
                 if start > covered:
                     break
                 covered = max(covered, stop)
-            if covered >= len(content):
-                event_key = "view_" + digest(
-                    {k: identity[k] for k in identity if k not in {"start", "end"}}
-                )
-                if not c.execute(
-                    "SELECT 1 FROM h2_events WHERE event_key=?", (event_key,)
-                ).fetchone():
-                    self._event(c, task, f"result.{view}_viewed", identity, key=event_key)
+            if covered >= len(content) and not completion_seen:
+                self._event(c, task, completion_type, identity, key="view_" + digest(scope))
         return {
             "result_ref": result_ref,
             "result_version": row["result_version"],
@@ -2301,6 +2732,7 @@ class DispatchRepository:
             "next_offset": end if end < len(content) else None,
             "evidence_refs": json.loads(row["evidence_refs_json"]),
             "warnings": json.loads(row["warnings_json"]),
+            "section_refs": readable_sections,
         }
 
     def reconcile(self, *, after_task_rowid=0, limit=200):
@@ -2349,7 +2781,7 @@ class DispatchRepository:
                         (a["attempt_id"],),
                     )
                     self._event(c, task, "attempt.expired", {"attempt_id": a["attempt_id"]})
-                    if a["attempt_no"] >= self.config.max_attempts:
+                    if self._failed_attempt_count(c, task["task_id"]) >= self.config.max_attempts:
                         self._terminate(c, task, "failed", "transport_error")
                     else:
                         self._attempt(c, task, a["checkpoint_ref"] or a["resume_checkpoint_ref"])
@@ -2549,6 +2981,137 @@ class DispatchRepository:
         index = min(len(ordered) - 1, max(0, int((len(ordered) - 1) * fraction)))
         return ordered[index]
 
+    @staticmethod
+    def _scheduling_trace(run_id, tasks, attempts, calls, events):
+        task_by_id = {task["task_id"]: task for task in tasks}
+        task_paths = {}
+
+        def path_for(task_id):
+            if task_id not in task_paths:
+                chain = []
+                current = task_by_id.get(task_id)
+                while current is not None:
+                    chain.append(current["role"])
+                    current = task_by_id.get(current.get("parent_task_id"))
+                task_paths[task_id] = list(reversed(chain))
+            return task_paths[task_id]
+
+        spans = []
+        for task in tasks:
+            started = min(
+                (attempt.get("started_at") for attempt in attempts
+                 if attempt["task_id"] == task["task_id"] and attempt.get("started_at") is not None),
+                default=task.get("created_at"),
+            )
+            spans.append({
+                "trace_id": run_id,
+                "span_id": task["task_id"],
+                "parent_span_id": task.get("parent_task_id"),
+                "span_type": "agent",
+                "task_id": task["task_id"],
+                "thread_id": task["thread_id"],
+                "role": task["role"],
+                "role_version": task["role_version"],
+                "depth": task["depth"],
+                "status": task["status"],
+                "started_at": started,
+                "finished_at": task.get("finished_at"),
+                "agent_path": path_for(task["task_id"]),
+            })
+        for attempt in attempts:
+            spans.append({
+                "trace_id": run_id,
+                "span_id": attempt["attempt_id"],
+                "parent_span_id": attempt["task_id"],
+                "span_type": "attempt",
+                "task_id": attempt["task_id"],
+                "attempt_id": attempt["attempt_id"],
+                "attempt_no": attempt["attempt_no"],
+                "status": attempt["status"],
+                "error_code": attempt.get("error_code"),
+                "started_at": attempt.get("started_at"),
+                "finished_at": attempt.get("finished_at"),
+                "agent_path": path_for(attempt["task_id"]),
+            })
+        for call in calls:
+            task_id = call["task_id"]
+            duration = None
+            if call.get("started_at") is not None and call.get("finished_at") is not None:
+                duration = max(0, call["finished_at"] - call["started_at"])
+            spans.append({
+                "trace_id": run_id,
+                "span_id": call["call_id"],
+                "call_id": call["call_id"],
+                "parent_span_id": call["attempt_id"],
+                "span_type": "model_call",
+                "task_id": task_id,
+                "attempt_id": call["attempt_id"],
+                "attempt_no": call.get("attempt_no"),
+                "model_profile": call.get("model_profile"),
+                "status": call["status"],
+                "error_code": call.get("error_code"),
+                "usage": call.get("usage", {}),
+                "started_at": call.get("started_at"),
+                "finished_at": call.get("finished_at"),
+                "duration_ms": duration,
+                "agent_path": path_for(task_id),
+            })
+
+        known_tasks = set(task_by_id)
+        trace_events = []
+        for event in events:
+            task_id = event.get("task_id") or event.get("aggregate_id")
+            task = task_by_id.get(task_id) if task_id in known_tasks else None
+            trace_events.append({
+                **event,
+                "trace_id": run_id,
+                "task_id": task_id if task else None,
+                "span_id": task_id if task else None,
+                "parent_span_id": task.get("parent_task_id") if task else None,
+                "role": task.get("role") if task else None,
+                "depth": task.get("depth") if task else None,
+                "agent_path": path_for(task_id) if task else [],
+            })
+        return {"trace_id": run_id, "spans": spans, "events": trace_events}
+
+    def scheduling_trace(self, caller: CallerContext, task_ids: list[str], events=None):
+        if not task_ids or len(task_ids) > 200 or len(set(task_ids)) != len(task_ids):
+            raise DispatchError("invalid_arguments")
+        with self.db.connection() as c:
+            self._actor(c, caller)
+            for task_id in task_ids:
+                self._access(c, caller, task_id)
+            marks = ",".join("?" for _ in task_ids)
+            tasks = [dict(row) for row in c.execute(
+                f"SELECT t.task_id,t.parent_task_id,t.thread_id,t.status,t.created_at,t.finished_at,"
+                f"th.role,th.role_version,th.depth FROM h2_tasks t "
+                f"JOIN h2_threads th ON th.thread_id=t.thread_id "
+                f"WHERE t.run_id=? AND t.task_id IN ({marks}) ORDER BY th.depth,t.created_at,t.rowid",
+                (caller.run_id, *task_ids),
+            )]
+            attempts = [dict(row) for row in c.execute(
+                f"SELECT attempt_id,task_id,attempt_no,status,error_code,started_at,finished_at "
+                f"FROM h2_attempts WHERE run_id=? AND task_id IN ({marks}) ORDER BY created_at,rowid",
+                (caller.run_id, *task_ids),
+            )]
+            calls = [dict(row) for row in c.execute(
+                f"SELECT m.call_id,m.task_id,m.attempt_id,a.attempt_no,m.status,m.error_code,"
+                f"m.usage_json,m.started_at,m.finished_at,s.payload_json AS model_payload "
+                f"FROM h2_model_calls m JOIN h2_attempts a ON a.attempt_id=m.attempt_id "
+                f"LEFT JOIN h2_snapshots s ON s.snapshot_id=m.model_snapshot_ref "
+                f"WHERE m.run_id=? AND m.task_id IN ({marks}) ORDER BY m.rowid",
+                (caller.run_id, *task_ids),
+            )]
+        for call in calls:
+            call["usage"] = json.loads(call.pop("usage_json"))
+            model = json.loads(call.pop("model_payload") or "{}")
+            call["model_profile"] = model.get("profile")
+        selected_events = [
+            event for event in (events or [])
+            if (event.get("task_id") or event.get("aggregate_id")) in set(task_ids)
+        ]
+        return self._scheduling_trace(caller.run_id, tasks, attempts, calls, selected_events)
+
     def export_run_records(self, run_id: str):
         """Export reconstructible records without making the filesystem a second authority."""
 
@@ -2565,8 +3128,21 @@ class DispatchRepository:
             events = [dict(row) for row in c.execute(
                 "SELECT * FROM h2_events WHERE run_id=? ORDER BY event_id", (run_id,)
             )]
+            tasks = [dict(row) for row in c.execute(
+                "SELECT t.task_id,t.parent_task_id,t.thread_id,t.status,t.created_at,t.finished_at,"
+                "th.role,th.role_version,th.depth FROM h2_tasks t "
+                "JOIN h2_threads th ON th.thread_id=t.thread_id WHERE t.run_id=? "
+                "ORDER BY th.depth,t.created_at,t.rowid", (run_id,)
+            )]
+            attempts = [dict(row) for row in c.execute(
+                "SELECT attempt_id,task_id,attempt_no,status,error_code,started_at,finished_at "
+                "FROM h2_attempts WHERE run_id=? ORDER BY created_at,rowid", (run_id,)
+            )]
             calls = [dict(row) for row in c.execute(
-                "SELECT * FROM h2_model_calls WHERE run_id=? ORDER BY rowid", (run_id,)
+                "SELECT m.*,a.attempt_no,s.payload_json AS model_payload "
+                "FROM h2_model_calls m JOIN h2_attempts a ON a.attempt_id=m.attempt_id "
+                "LEFT JOIN h2_snapshots s ON s.snapshot_id=m.model_snapshot_ref "
+                "WHERE m.run_id=? ORDER BY m.rowid", (run_id,)
             )]
         if query is None:
             raise DispatchError("artifact_unavailable")
@@ -2581,13 +3157,28 @@ class DispatchRepository:
         call_records = []
         for call in calls:
             call["usage"] = json.loads(call.pop("usage_json"))
+            model = json.loads(call.pop("model_payload") or "{}")
+            call["model_profile"] = model.get("profile")
             call_records.append(call)
+        scheduling_trace = self._scheduling_trace(
+            run_id, tasks, attempts, call_records, event_records,
+        )
+        event_records = scheduling_trace["events"]
+        spans = {span["span_id"]: span for span in scheduling_trace["spans"]}
+        call_records = [
+            {**call, **spans[call["call_id"]]} for call in call_records
+        ]
         trace = [
-            {"record_type": "event", "created_at": row["created_at"], **row}
-            for row in event_records
+            {
+                "record_type": "model_call" if span["span_type"] == "model_call"
+                else f"{span['span_type']}_span",
+                "created_at": span.get("started_at") or span.get("finished_at"),
+                **span,
+            }
+            for span in scheduling_trace["spans"]
         ] + [
-            {"record_type": "model_call", "created_at": row.get("started_at") or row.get("finished_at"), **row}
-            for row in call_records
+            {"record_type": "event", "created_at": row.get("created_at"), **row}
+            for row in event_records
         ]
         trace.sort(key=lambda row: (row.get("created_at") or 0, row["record_type"]))
         paths = {
@@ -2600,6 +3191,7 @@ class DispatchRepository:
             "events": self.records.write_jsonl(run_id, "events.jsonl", event_records),
             "model_calls": self.records.write_jsonl(run_id, "model-calls.jsonl", call_records),
             "trace": self.records.write_jsonl(run_id, "trace.jsonl", trace),
+            "scheduling_trace": self.records.write_json(run_id, "scheduling-trace.json", scheduling_trace),
         }
         return {
             "run_id": run_id,

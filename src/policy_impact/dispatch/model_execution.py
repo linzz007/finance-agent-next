@@ -25,6 +25,29 @@ from policy_impact.harness.responses_model_gateway import ResponsesModelAdapter
 from policy_impact.runtime.actions import AgentAction, _validate_json_value
 
 from .contracts import DispatchError
+from .diagnostics import public_output_normalization, public_validation_errors
+from .diagnostics import safe_text as _safe_text
+from .finance_actions import (
+    extract_public_action_text,
+    normalize_json_string_syntax,
+    parse_root_action,
+)
+
+
+def _is_dsml_action(content: str) -> bool:
+    return re.match(
+        r"\s*<(?:\|\||\uff5c\uff5c)DSML(?:\|\||\uff5c\uff5c)\s+calls>",
+        content,
+    ) is not None
+
+
+def _is_current_dsml_action(content: str) -> bool:
+    return re.match(
+        r"\s*<(?:\|\||\uff5c\uff5c)DSML(?:\|\||\uff5c\uff5c)\s+calls>\s*"
+        r"<(?:\|\||\uff5c\uff5c)DSML(?:\|\||\uff5c\uff5c)\s+invoke\s+name=\"tool\.call\">\s*"
+        r"<(?:\|\||\uff5c\uff5c)DSML(?:\|\||\uff5c\uff5c)\s+parameter\s+name=\"name\"\s+",
+        content,
+    ) is not None
 
 
 class ModelSettings(BaseModel):
@@ -91,13 +114,6 @@ def _is_quota(problem):
         "insufficient_user_quota",
         "insufficient_balance",
     }
-
-
-def _safe_text(value, secret=""):
-    text = str(value)
-    if secret:
-        text = text.replace(secret, "[REDACTED]")
-    return re.sub(r"\bsk-[A-Za-z0-9_-]{12,}", "[REDACTED]", text)
 
 
 def _usage(value):
@@ -398,6 +414,7 @@ class GatewayModelAdapter:
         self._active[request.call_id] = task
         received = False
         usage, response_id, request_id = {}, "", ""
+        normalization = {}
         try:
             try:
                 result = await asyncio.wait_for(
@@ -431,14 +448,38 @@ class GatewayModelAdapter:
                 yield ModelEvent(request.call_id, seq, "text_delta", {"text": text})
                 seq += 1
                 yield ModelEvent(request.call_id, seq, "usage", {"usage": usage})
-                # No salvaging arbitrary prose, hidden reasoning or half a streamed action.
-                payload = json.loads(text)
-                if not isinstance(payload, dict):
-                    raise DispatchError("contract_error", "public action must be an object")
+                # Parse one bounded public action. Any trailing provider/model text
+                # stays in the raw audit artifact and can never become an observation.
+                parse_text = text
+                is_dsml_action = request.schema_name == "agent_action.v1" and _is_dsml_action(text)
+                is_current_dsml_action = is_dsml_action and _is_current_dsml_action(text)
+                if is_current_dsml_action:
+                    normalization = {
+                        "public_output_normalization": {"dsml_action": "deepseek_text_tool"},
+                    }
+                if request.schema_name == "agent_action.v1" and not is_dsml_action:
+                    try:
+                        parse_text, boundary = extract_public_action_text(text)
+                    except ValueError:
+                        # Keep the bounded normalization fact visible even when
+                        # the candidate later fails JSON or Schema validation.
+                        _, syntax = normalize_json_string_syntax(text)
+                        detail = public_output_normalization(syntax)
+                        if detail:
+                            normalization = {"public_output_normalization": detail}
+                        raise
+                    detail = public_output_normalization(boundary)
+                    if detail:
+                        normalization = {"public_output_normalization": detail}
+                payload = codec._parse_action_payload(parse_text)
                 payload = codec._normalize_schema_envelope(payload, request.schema_name)
                 codec._validate_schema(payload, request.schema_name)
-                if request.schema_name in {
-                    "agent_action.v1",
+                if request.schema_name == "agent_action.v1":
+                    action, warnings = parse_root_action(payload)
+                    # Keep the rejected delta visible to the Root, which owns partial delivery.
+                    if not warnings:
+                        payload = action.model_dump(mode="json")
+                elif request.schema_name in {
                     "general_chat_agent_loop.v1",
                     "finance.research_result.v1",
                 }:
@@ -456,6 +497,7 @@ class GatewayModelAdapter:
                         "usage": usage,
                         "response_id": response_id,
                         "provider_request_id": request_id,
+                        **normalization,
                     },
                 )
             except asyncio.CancelledError:
@@ -469,6 +511,7 @@ class GatewayModelAdapter:
                         "code": "cancelled",
                         "retryable": False,
                         "physical_status": "unknown",
+                        **normalization,
                     },
                 )
             except (
@@ -497,6 +540,16 @@ class GatewayModelAdapter:
                         )
                 else:
                     code = "contract_error"
+                diagnostic = {}
+                if isinstance(exc, ValidationError):
+                    diagnostic = {
+                        "validation_stage": (
+                            "final.output" if request.schema_name == "finance.research_result.v1" else "action"
+                        ),
+                        "validation_errors": public_validation_errors(
+                            exc.errors(include_input=False, include_context=False), secret=secret,
+                        ),
+                    }
                 yield ModelEvent(
                     request.call_id,
                     seq + 1,
@@ -512,6 +565,8 @@ class GatewayModelAdapter:
                         "usage": usage,
                         "response_id": response_id,
                         "provider_request_id": request_id,
+                        **diagnostic,
+                        **normalization,
                     },
                 )
         finally:

@@ -207,6 +207,13 @@ def _extract_fact_blocks(body: str, page_meta: dict[str, Any], source_path: str)
     return facts
 
 
+def parse_wiki_page(text: str, source_path: str) -> dict[str, Any]:
+    """Parse one captured page with the same rules used by filesystem loading."""
+    meta, body = parse_frontmatter(text)
+    return {"path": source_path, "meta": meta, "body": body,
+            "facts": _extract_fact_blocks(body, meta, source_path)}
+
+
 def load_wiki_pages(company_id: str) -> list[dict[str, Any]]:
     wiki_dir = company_dir(company_id) / "wiki"
     if wiki_dir.resolve() != wiki_dir:
@@ -218,9 +225,7 @@ def load_wiki_pages(company_id: str) -> list[dict[str, Any]]:
         if path.is_dir():
             continue
         text = path.read_text(encoding="utf-8")
-        meta, body = parse_frontmatter(text)
-        facts = _extract_fact_blocks(body, meta, rel_path)
-        pages.append({"path": rel_path, "meta": meta, "body": body, "facts": facts})
+        pages.append(parse_wiki_page(text, rel_path))
     return pages
 
 

@@ -1,0 +1,85 @@
+{
+  "schema_version": "finance.h2.subagent_acceptance.v1",
+  "cases": [
+    {
+      "id": "SA-G01",
+      "role": "general",
+      "objective": "Blind-review the method in the assigned text.",
+      "task_instructions": "Act as an independent blind reviewer. Identify assumptions and give a concrete falsification test; do not infer the author's identity.",
+      "success_criteria": ["Separate an explicit premise from your own methodological suggestion."],
+      "source_required": true,
+      "output_contract": {"name": "finance.task_result", "version": "1"},
+      "content": "The view remains conditional. A useful method check would test the opposite assumption."
+    },
+    {
+      "id": "SA-G02",
+      "role": "general",
+      "objective": "Explain the difference between a claim and an assumption.",
+      "task_instructions": "Act as a tutor. Give one abstract example using a claim and its assumption; this is a conceptual explanation without source verification.",
+      "success_criteria": ["Label the invented example and avoid claiming source research."],
+      "source_required": false,
+      "output_contract": {"name": "finance.task_result", "version": "1"},
+      "content": "Invented example: demand rises if income rises. Rising demand is the claim; rising income is the assumption."
+    },
+    {
+      "id": "SA-A01",
+      "role": "analyst",
+      "objective": "Explain the author's conditional view without independent review.",
+      "task_instructions": "Keep the source condition, distinguish interpretation from fact, and return the article analysis directly.",
+      "success_criteria": ["Retain the condition and do not claim independent review."],
+      "source_required": true,
+      "review_mode": "off",
+      "expected_review_status": "not_requested",
+      "expected_review_rounds": 0,
+      "output_contract": {"name": "finance.analyst_result", "version": "2"},
+      "content": "The view remains conditional. This describes the author's position without independent review."
+    },
+    {
+      "id": "SA-A02",
+      "role": "analyst",
+      "objective": "Explain a directly attributed source statement.",
+      "task_instructions": "Decide whether an independent check adds value; if skipping, give a task-specific reason.",
+      "success_criteria": ["Make the review decision explicit and retain source attribution."],
+      "source_required": true,
+      "review_mode": "auto",
+      "expected_review_status": "skipped_with_reason",
+      "expected_review_rounds": 0,
+      "output_contract": {"name": "finance.analyst_result", "version": "2"},
+      "content": "The view remains conditional. The assignment is limited to an explicitly attributed statement."
+    },
+    {
+      "id": "SA-A03",
+      "role": "analyst",
+      "objective": "Analyze the view and resolve independent review findings.",
+      "task_instructions": "Request independent review, incorporate supported findings, and have the revised version checked before delivery.",
+      "success_criteria": ["Resolve every finding and bind the final review to the delivered revision."],
+      "source_required": true,
+      "review_mode": "required",
+      "review_options": {"instructions": "Check whether the author's condition survived the summary."},
+      "expected_review_status": "reviewed_with_resolutions",
+      "expected_review_rounds": 2,
+      "output_contract": {"name": "finance.analyst_result", "version": "2"},
+      "content": "The view remains conditional. The final summary retains the author's stated condition."
+    },
+    {
+      "id": "SA-V01",
+      "role": "verifier",
+      "objective": "Check whether the source supports a conditional attribution.",
+      "task_instructions": "Check source fidelity only. State which wording is supported and leave real-world correctness unverified.",
+      "success_criteria": ["Keep source support separate from independent external verification."],
+      "source_required": true,
+      "output_contract": {"name": "finance.research_result", "version": "1"},
+      "content": "The view remains conditional. The source supports that attribution; external facts were not checked."
+    },
+    {
+      "id": "SA-S01",
+      "role": "skeptic",
+      "objective": "Identify a failure condition in the assigned reasoning.",
+      "task_instructions": "Examine the premise and describe a possible failure condition. Mark the counterexample as hypothetical when no contrary source is available.",
+      "success_criteria": ["Do not manufacture observed counterevidence."],
+      "source_required": true,
+      "output_contract": {"name": "finance.research_result", "version": "1"},
+      "content": "The view remains conditional. A failure of the stated premise is a hypothetical counterexample, not observed counterevidence."
+    }
+  ]
+}

@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from policy_impact.runtime.research_contracts import (
+    ReviewMode,
+    ReviewPolicy,
+    ReviewRequest,
+    ReviewScope,
+)
 
 Text = Annotated[str, Field(min_length=1, max_length=4096, pattern=r"\S")]
 Identifier = Annotated[str, Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9_.:-]+$")]
+TaskName = Annotated[str, Field(min_length=1, max_length=160, pattern=r"\S")]
 Positive = Annotated[int, Field(gt=0)]
 
 TERMINAL = frozenset({"succeeded", "partial", "failed", "cancelled", "timed_out"})
@@ -16,14 +25,26 @@ LIVE_ATTEMPTS = frozenset({"queued", "leased", "running"})
 
 
 class DispatchError(ValueError):
-    def __init__(self, code: str, message: str = "", *, retryable: bool = False):
+    def __init__(self, code: str, message: str = "", *, retryable: bool = False, details=None):
         self.code = code
         self.retryable = retryable
+        self.details = dict(details or {})
         super().__init__(message or code)
 
 
 class Command(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+
+class ResearchClock(Command):
+    today: str = Field(pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+    timezone: Literal["Asia/Shanghai"]
+
+    @field_validator("today")
+    @classmethod
+    def valid_calendar_date(cls, value: str) -> str:
+        date.fromisoformat(value)
+        return value
 
 
 class BudgetRequest(Command):
@@ -36,16 +57,62 @@ class OutputContract(Command):
     version: Identifier
 
 
-class Spawn(Command):
-    dispatch_key: Identifier
-    role: Identifier
-    role_version: Identifier
-    objective: Text
-    success_criteria: list[Text] = Field(min_length=1)
-    input_refs: list[Identifier]
-    output_contract: OutputContract
-    requested_budget: BudgetRequest
-    parent_context_refs: list[Identifier] = Field(default_factory=list)
+class ReviewOptions(Command):
+    scope: list[ReviewScope] | None = Field(default=None, min_length=1, max_length=6)
+    instructions: Text | None = None
+    max_rounds: int | None = Field(default=None, ge=1, le=5)
+
+    @field_validator("scope")
+    @classmethod
+    def unique_scope(cls, value):
+        if value is not None and len(value) != len(set(value)):
+            raise ValueError("duplicate review scope")
+        return value
+
+
+class AgentSpawnProfileOptions(Command):
+    """Specialist-only options exposed by the Analyst Profile."""
+
+    review_mode: ReviewMode | None = Field(
+        default=None, description="Analyst only: required, auto, or off; defaults to auto.",
+    )
+    review_options: ReviewOptions | None = Field(
+        default=None, description="Analyst only: optional review scope, instructions, or smaller round cap.",
+    )
+
+
+class AgentSpawnInput(Command):
+    """Compact model-facing delegation request; Runtime supplies internal identity fields."""
+
+    task_name: TaskName = Field(description="Short human-readable label for this delegated task.")
+    message: Text = Field(description="The task goal and the information the child needs to do it.")
+    profile: Identifier = Field(default="general", description="Registered Profile; defaults to general.")
+    task_instructions: Text | None = Field(
+        default=None, description="Optional method, scope, or delivery details for this task.",
+    )
+    success_criteria: list[Text] | None = Field(
+        default=None,
+        description="Task-specific acceptance criteria. Required for specialist Profiles; general has a default.",
+        min_length=1,
+    )
+    input_refs: list[Identifier] = Field(
+        default_factory=list, description="Explicitly authorized material references needed by the child.",
+    )
+    parent_context_refs: list[Identifier] = Field(
+        default_factory=list, description="Optional explicit parent-context artifact references.",
+    )
+    output_contract: OutputContract | None = Field(
+        default=None, description="Optional registered output contract; otherwise the Profile default is used.",
+    )
+    profile_options: AgentSpawnProfileOptions | None = Field(
+        default=None, description="Profile-specific options. Currently supported only by Analyst.",
+    )
+    requested_budget: BudgetRequest | None = Field(
+        default=None, description="Required only by historical Runs using requested-budget scheduling.",
+    )
+    wall_time_ms: Positive | None = Field(
+        default=None, description="Optional shorter duration request under the fixed-budget policy.",
+    )
     depends_on_task_ids: list[Identifier] = Field(default_factory=list)
     priority: int = 0
     model_profile: Identifier | None = None
@@ -55,13 +122,59 @@ class Spawn(Command):
         for values in (self.input_refs, self.parent_context_refs, self.depends_on_task_ids):
             if len(values) != len(set(values)):
                 raise ValueError("duplicate references")
+        if self.requested_budget is not None and self.wall_time_ms is not None:
+            raise ValueError("specify only one duration source")
+        return self
+
+
+class Spawn(Command):
+    dispatch_key: Identifier
+    role: Identifier
+    role_version: Identifier
+    objective: Text
+    task_instructions: Text | None = None
+    success_criteria: list[Text] = Field(min_length=1)
+    input_refs: list[Identifier]
+    output_contract: OutputContract
+    review_policy: ReviewPolicy | None = None
+    review_mode: ReviewMode | None = Field(
+        default=None, description="Analyst v2 only: required, auto (default), or off for independent review.",
+    )
+    review_options: ReviewOptions | None = Field(
+        default=None,
+        description="Optional Analyst v2 review scope, special instructions, or smaller round cap; default cap is five.",
+    )
+    review_request: ReviewRequest | None = None
+    requested_budget: BudgetRequest | None = None
+    wall_time_ms: Positive | None = None
+    parent_context_refs: list[Identifier] = Field(default_factory=list)
+    depends_on_task_ids: list[Identifier] = Field(default_factory=list)
+    priority: int = 0
+    model_profile: Identifier | None = None
+
+    @model_validator(mode="after")
+    def unique_refs(self):
+        if self.review_policy is not None and (self.review_mode is not None or self.review_options is not None):
+            raise ValueError("use review_mode/review_options or legacy review_policy, not both")
+        if self.requested_budget is not None and self.wall_time_ms is not None:
+            raise ValueError("specify only one duration source")
+        for values in (self.input_refs, self.parent_context_refs, self.depends_on_task_ids):
+            if len(values) != len(set(values)):
+                raise ValueError("duplicate references")
         return self
 
 
 class FollowUp(Command):
-    requested_budget: BudgetRequest
+    requested_budget: BudgetRequest | None = None
+    wall_time_ms: Positive | None = None
     output_contract: OutputContract
     success_criteria: list[Text] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def one_duration(self):
+        if self.requested_budget is not None and self.wall_time_ms is not None:
+            raise ValueError("specify only one duration source")
+        return self
 
 
 class Send(Command):
@@ -179,6 +292,7 @@ class Lease:
 
 @dataclass(frozen=True)
 class SchedulerConfig:
+    budget_policy: Literal["fixed", "hierarchical"] = "fixed"
     stream_name: str = "finance-agent-next:local:h2:dispatch"
     lease_ms: int = 60000
     publisher_lease_ms: int = 30000
@@ -189,6 +303,9 @@ class SchedulerConfig:
     worker_concurrency: int = 4
     max_children: int = 40
     root_calls: int = 600
+    root_task_calls: int = 120
+    child_task_calls: int = 60
+    child_ms: int = 1200000
     root_reserve_calls: int = 24
     run_ms: int = 3600000
     run_reserve_ms: int = 600000
@@ -199,7 +316,10 @@ class SchedulerConfig:
     aging_priority_step: int = 1
 
     def __post_init__(self):
-        if any(type(v) is not int or v <= 0 for k, v in vars(self).items() if k != "stream_name"):
+        if self.budget_policy not in {"fixed", "hierarchical"}:
+            raise ValueError("invalid budget policy")
+        if any(type(v) is not int or v <= 0 for k, v in vars(self).items()
+               if k not in {"stream_name", "budget_policy"}):
             raise ValueError("scheduler limits must be positive integers")
         if self.root_reserve_calls >= self.root_calls or self.run_reserve_ms >= self.run_ms:
             raise ValueError("reserve must leave research capacity")

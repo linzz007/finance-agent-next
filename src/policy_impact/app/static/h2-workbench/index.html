@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Finance Agent Next | Harness 2.0</title>
+  <link rel="stylesheet" href="/static/h2-workbench/style.css?v=109">
+  <script defer src="/static/h2-workbench/lucide.min.js"></script>
+  <script defer src="/static/h2-workbench/marked.min.js"></script>
+  <script defer src="/static/h2-workbench/purify.min.js"></script>
+  <script defer src="/static/h2-workbench/app.js?v=109"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">Finance Agent Next <span>2.0</span></div>
+    <button id="new-session" class="primary"><i data-lucide="plus"></i>新的研究</button>
+    <div class="tabs record-tabs" role="tablist" aria-label="记录类型"><button id="tab-sessions" role="tab" aria-selected="true">研究记录</button><button id="tab-archives" role="tab" aria-selected="false">测试记录</button></div>
+    <nav id="sessions" aria-label="研究记录"></nav>
+    <nav id="archives" aria-label="测试记录" hidden></nav>
+    <div class="sidebar-footer"><span class="status-dot"></span>Harness 2.0<span id="backend">连接中</span></div>
+  </aside>
+  <main>
+    <header class="topbar">
+      <h1 id="session-title">金融研究</h1>
+      <label for="model">本轮模型</label><select id="model" aria-label="本轮模型"></select>
+    </header>
+    <div id="error" role="alert" hidden></div>
+    <div id="archive-banner" class="archive-banner" hidden><span id="archive-description"></span><span>已保存 · 只读</span></div>
+    <section id="messages" class="messages" aria-live="polite">
+      <div class="empty"><i data-lucide="book-open"></i><h2>新的金融研究</h2></div>
+    </section>
+    <form id="composer">
+      <textarea id="query" rows="3" maxlength="4096" placeholder="输入研究问题" aria-label="研究问题" required></textarea>
+      <div class="composer-actions"><span id="run-status">就绪</span><div>
+        <button id="cancel" type="button" class="quiet" hidden><i data-lucide="square"></i>停止</button>
+        <button id="send" class="primary" type="submit"><i data-lucide="arrow-up"></i>开始研究</button>
+      </div></div>
+    </form>
+  </main>
+  <aside class="inspector" aria-label="H2 Runtime">
+    <header><h2>H2 Runtime</h2><button id="refresh" class="icon-button" title="刷新 Runtime" aria-label="刷新 Runtime"><i data-lucide="refresh-cw"></i></button></header>
+    <div class="run-meta"><div>Run</div><code id="run-id">尚未创建</code><div id="run-model"></div></div>
+    <div id="stats" class="stats"><div><b>0</b><span>模型请求</span></div><div><b>0</b><span>任务</span></div><div><b>0</b><span>Attempt</span></div></div>
+    <div id="budget" class="budget"></div>
+    <div class="tabs" role="tablist"><button id="tab-tasks" role="tab" aria-selected="true">任务树</button><button id="tab-events" role="tab" aria-selected="false">Trace 事件 <span id="event-count">0</span></button></div>
+    <section id="tasks" class="inspection-content"></section>
+    <section id="events" class="inspection-content" hidden><div id="trace-calls"></div></section>
+  </aside>
+  <dialog id="artifact-dialog"><header><h2 id="artifact-title">执行记录</h2><button id="close-dialog" class="icon-button" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button></header><pre id="artifact-body"></pre><button id="more-artifact" class="quiet" hidden>继续读取</button></dialog>
+</body>
+</html>

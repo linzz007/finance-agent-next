@@ -77,7 +77,7 @@ def outbox_payload(repo, task_id):
 def test_watermarks_do_not_lock_accepted_work_and_release_at_low_watermark(tmp_path):
     clock = Clock()
     config = SchedulerConfig(
-        stream_name="h2:pressure",
+        stream_name="h2:pressure", budget_policy="hierarchical",
         outbox_high_watermark=2,
         outbox_low_watermark=1,
     )
@@ -103,7 +103,7 @@ def test_watermarks_do_not_lock_accepted_work_and_release_at_low_watermark(tmp_p
 def test_aging_allows_an_older_lower_priority_task_to_be_published_first(tmp_path):
     clock = Clock()
     config = SchedulerConfig(
-        stream_name="h2:aging",
+        stream_name="h2:aging", budget_policy="hierarchical",
         outbox_high_watermark=100,
         outbox_low_watermark=50,
         aging_step_ms=1000,
@@ -118,7 +118,7 @@ def test_aging_allows_an_older_lower_priority_task_to_be_published_first(tmp_pat
 
 def test_safe_trim_keeps_unsettled_and_pending_entries(tmp_path):
     clock = Clock()
-    config = replace(SchedulerConfig(stream_name="h2:trim"), outbox_high_watermark=1000)
+    config = replace(SchedulerConfig(stream_name="h2:trim", budget_policy="hierarchical"), outbox_high_watermark=1000)
     repo, root, _caller = make_repo(tmp_path, clock, config)
     transport = RedisStreams(fakeredis.FakeRedis(decode_responses=True), config.stream_name)
     dispatcher = Dispatcher(repo, transport)

@@ -1,0 +1,56 @@
+{
+  "versions": [
+    "1.0.0"
+  ],
+  "description": "Check assigned assertions against authorized evidence; distinguish source support from external factual verification.",
+  "instructions": "verifier",
+  "input_requirements": [
+    "The assertions to check and success_criteria.",
+    "Authorized source handles and the permitted external-check scope; missing access is a gap, not permission."
+  ],
+  "output_contract": "finance.research_result.v1",
+  "allowed_tools": [
+    "article.list",
+    "article.search",
+    "article.read",
+    "article.claims",
+    "tool.describe",
+    "material.get",
+    "web.search",
+    "web.open",
+    "market.catalog",
+    "market.snapshot",
+    "market.metrics",
+    "market.series",
+    "personal.catalog",
+    "context.open",
+    "company_wiki_search",
+    "agent.spawn",
+    "agent.wait",
+    "agent.status",
+    "agent.send",
+    "agent.cancel",
+    "agent.resume",
+    "result.get"
+  ],
+  "allowed_child_profiles": [
+    "general",
+    "analyst",
+    "verifier",
+    "skeptic"
+  ],
+  "input_contracts": [
+    "finance.review_request@1",
+    "finance.research_task@1"
+  ],
+  "output_contracts": [
+    "finance.review_report@1",
+    "finance.research_result@1",
+    "finance.child@1"
+  ],
+  "context_policy": {
+    "history": "task_local",
+    "materials": "explicit_refs",
+    "parent_context": "explicit_only"
+  }
+}

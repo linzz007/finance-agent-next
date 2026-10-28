@@ -18,9 +18,50 @@
 
 ## 1.1 C16 兼容性状态
 
+2026-10-24 用户确认 [102](../changes/102-h2-five-action-corrections.md)：新 Run 的 Root/子/孙
+每次决策在首次生成后最多补正五次，成功即停；以下历史“一次补正/最多三次物理请求”不再适用于新规则快照。
+所有补正共享最多一次额外传输重发，故每决策至多七次物理请求，受原模型、预算和截止时间约束。
+补正只保留原任务上下文与最新一条安全反馈，不累积被拒正文；每次调用/诊断均审计，耗尽不得重启决策。
+规则随 Run 冻结，缺少 action_repair_limit 的旧快照继续一次。锚点冻结正文、部分交付边界不变。
+
 2026-10-19 的 C16 离线回归已确认：旧版同步路径与 H2 异步路径能够保留同一篇文章的作者、发布日期、原文、EvidenceRef 和答案语义；`article.list` 不会单独制造 `read_status=complete`。记录见 [024](../changes/024-harness-v2-c16-compatibility.md)。
 
 该回归的状态是 `verified-partial`：H2 当前 `FinanceRootState.review` 仍可能为 `None`。模型输出中的审核字段不能直接充当 Runtime 审核完成证明。统一 `state_update` 增量协议已由用户确认，正式定义和验收范围见 [026](../changes/026-finance-state-update-protocol.md)；它只适用于显式 H2 金融 Root，不替代 1.0 接口或调度生命周期。
+
+2026-10-19 用户另行确认 [030](../changes/030-h2-action-contract-handoff.md)：仅 Root
+收到完整公开输出后的格式/动作结构错误，可在同模型、原预算内补正一次，物理调用独立记账。
+Adapter 仍为单次请求；额度、权限、传输和无完整输出不进入这次格式补正。以下冻结规则中的
+“格式错误交父 Agent、不自动重试”保留为通用底层语义，Root 层仅有这项已确认例外。
+
+R7 完成后，用户另行确认 [037](../changes/037-h2-child-action-envelope-and-budget-errors.md)：
+研究子 Agent 在同模型、原申请预算内每次决策也最多补正一次公开动作或 ResearchResult
+结构/证据锚点。完整失败公开输出、原调用和补正调用分别保留；无完整输出、传输、额度、
+权限或预算失败不触发补正，补正失败不重启整次决策。内层输出 Schema 只描述 `final.output`，
+不得把裸 ResearchResult 自动包装为成功结果。该例外不回溯改变冻结 R7 的失败结果。
+Runtime 执行预约被 `budget_denied` 拒绝时保留该原因，不误记为 `internal_error`。
+
+R9 后的恢复调整见 [048](../changes/048-h2-correction-transport-retry.md)：只有上述唯一
+格式补正的首次发送遇到 `transport_error`，才允许在同 Attempt、同模型和原预算/时限内，
+将相同补正消息重发一次。每个决策最多三个独立记账的物理请求；不是再补正一次，也不重发
+原始决策。第三次任意失败都终止本次决策；额度、权限、取消、超时和非传输错误不适用。
+原调用结果未知时仍保留计费。该新边界取代 030/037 在此特定传输分支的旧限制，不改历史结果。
+
+2026-10-20 用户确认 [065](../changes/065-h2-correction-input-isolation-and-json-fence.md)：
+Root/研究子 Agent 补正只追加有界错误定位和去正文的局部语法片段，不再整段回灌被拒输出；
+完整原始公开输出仍留在审计中。保留原任务、真实观察、Schema、原模型/预算和一次补正边界。
+H2 仅可规范化包住单个 JSON 对象的唯一一层 bare/json Markdown 围栏，不接受说明文字、
+额外 XML、多个对象或非法参数；不增加调用、不改变原始输出记录，严格校验和执行边界不变。
+这两项明确批准取代历史待确认状态，不代表旧批次失败已被复验解决。
+
+[038](../changes/038-h2-model-revocation-boundary.md)细化既有模型撤销与发送记账边界：
+`call_started` 事务再次检查原 Attempt 模型仍在当前用户允许列表内。预约后、发送前被撤销，
+不得发送请求；确认未发送的预约走原有 `not_sent` 退款路径，执行错误保留 `forbidden`。
+已开始的请求不保证撤回或免计费；仅更改默认模型、仍允许原模型时不改写当前 Attempt。
+
+2026-10-19 用户确认 [032](../changes/032-h2-durable-action-continuation.md) 的方案 A：
+动作后持久化并重新入队。可信 `Continue(checkpoint)` 和金融 `FinanceStep(continuing)`
+表示同一 Task 的下一步，不是完成或失败重试；事务内保存检查点、挂起旧 Attempt、
+创建新 Attempt 和 Outbox 后才可 ACK。异步金融动作和子循环的实现状态按 032 分项记录。
 
 ## 2. 共同规则
 
@@ -43,6 +84,18 @@
 ```
 
 新调度 `agent.*`、`result.*` 是注册工具名称，不是允许 Subagent 直接操作 SQL/Redis 的后门。旧 `delegate` 先保留兼容；切换由明确的新路径开关控制，不能同时对同一业务意图同步 delegate 和异步 spawn 两次。
+
+新建 H2 Run 采用 [067 独立调用上限](../changes/067-h2-independent-call-limits.md)：
+Root 自身 120 次，每个子/孙 Task 自身 60 次，整轮共用 600 次/60 分钟。
+模型侧 spawn 与终态 follow_up 不含 requested_budget，可选 wall_time_ms 只申请时长；
+未指定时按现有 20 分钟上限与父级剩余研究时间取界。自身调用与整轮消耗分别披露，
+不预占子任务的全部调用额度，恢复不清零。下面的显式申请规则只适用于旧 hierarchical Run。
+
+旧 hierarchical H2 研究任务由 Agent 使用 `agent.spawn` 显式申请 `requested_budget`。
+旧 `delegate`（含版本化 analyst）在模型选择前披露兼容申请值：analyst 为
+4 次调用 / 600000 ms，verifier、skeptic 为 1 次 / 120000 ms。它们不是新任务的
+默认推荐额度；不自动扩额、降额或转换调用。主/子提示、按需动作说明及实际兼容
+执行使用同一定义，详见 [033](../changes/033-h2-explicit-delegation-budget.md)。
 
 ### 2.2 回执、幂等与错误
 
@@ -79,7 +132,7 @@ Runtime 在模型动作成功后、观察写回前崩溃，必须保存/恢复�
 
 ### 2.3 参数通则与后端入口
 
-示例中省略的可选字段不代表必填字段可以由模型任意省略：所有写操作要求稳定 key；spawn 必填 role/role_version、objective、success_criteria、input_refs、output_contract、requested_budget 和 dispatch_key；priority 默认 0、depends_on_task_ids 默认空、parent_context_refs 默认空、model_profile 默认继承。身份、状态、租约和生成时间只能由 Runtime 填充。空目标、重复目标、未知字段和错误 JSON 类型均拒绝，不能静默丢弃后继续执行。
+示例中省略的可选字段不代表必填字段可以由模型任意省略：所有写操作要求稳定 key；spawn 必填 role/role_version、objective、success_criteria、input_refs、output_contract 和 dispatch_key。现行 fixed Run 禁止模型指定 requested_budget，可选 wall_time_ms；历史 hierarchical Run 仍必须提供 requested_budget。priority 默认 0、depends_on_task_ids 默认空、parent_context_refs 默认空、model_profile 默认继承。身份、状态、租约和生成时间只能由 Runtime 填充。空目标、重复目标、未知字段和错误 JSON 类型均拒绝，不能静默丢弃后继续执行。
 
 wait 的 mode 默认 all、after_event_id 默认 "0"、timeout_ms 默认 30000；status/wait 的 max_events 默认 100、上限 200；timeout_ms 范围 0..60000，实际不得超调用方 Task/Run 剩余时限。大事件集分页，不截断伪装完整。result.get 的 view 默认 summary、offset 默认 0；字符分页初值 limit=16000、上限 64000，返回 next_offset。调整这些传输参数不得缩减研究任务预算。
 
@@ -118,12 +171,12 @@ result.submit 走内部执行上下文，不提供可绕过 Worker lease 的公�
   "output_contract": {"name": "finance.article_understanding", "version": "2.0.0"},
   "depends_on_task_ids": [],
   "priority": 0,
-  "requested_budget": {"model_calls": 30, "wall_time_ms": 1200000},
+  "wall_time_ms": 1200000,
   "model_profile": "gpt-responses"
 }
 ```
 
-示例 30 次只是展示字段，不是新默认额度；父 Agent 按实际任务申请，Runtime 不能静默少分。model_profile 可省略，继承父策略；传 profile ID 而不是混用供应商 model_id。允许使用的工具、权限、Prompt 和 deadline 由 Runtime 生成不可变 TaskBrief，模型不能直接提供权限快照或密钥。
+上述是现行 fixed Run 的示例：子任务自身上限由 Runtime 固定为 60，不在派发时预占 60；主 Agent 只可申请时长。历史 hierarchical Run 将 wall_time_ms 替换为 requested_budget={model_calls,wall_time_ms}，保留原申请分配机制。model_profile 可省略，继承父策略；传 profile ID 而不是混用供应商 model_id。允许使用的工具、权限、Prompt 和 deadline 由 Runtime 生成不可变 TaskBrief，模型不能直接提供权限快照或密钥。
 
 成功 `data`：
 
@@ -134,7 +187,7 @@ result.submit 走内部执行上下文，不提供可绕过 Worker lease 的公�
   "task_id": "tsk_002",
   "attempt_id": "att_002_1",
   "status": "pending_dispatch",
-  "allocated_budget": {"model_calls": 30, "wall_time_ms": 1200000},
+  "allocated_budget": {"model_calls": 60, "wall_time_ms": 1200000},
   "deadline_at": 1792286400000,
   "dispatch_state": "pending",
   "result_ref": null
@@ -144,6 +197,14 @@ result.submit 走内部执行上下文，不提供可绕过 Worker lease 的公�
 接收事务见 T01。相同 dispatch_key 只能返回已有 Task；请求 hash 不同必须冲突。依赖图和引用校验在提交前完成，失败不能残留孤儿 Thread、空预算账户或消息。
 
 TaskBrief 至少含：目标、成功标准、输入引用/版本、必要父结论、role/version、允许工具及契约版本、输出契约、模型策略、预算、deadline、run/thread/task/parent/depth、Trace 关联。只携带与子任务有关的父材料；不复制父完整会话、全部兄弟结果和私有思考。
+
+每轮还包含可信 `research_clock={today: YYYY-MM-DD, timezone: Asia/Shanghai}`。Python `create_run` 可显式传入该可选对象用于冻结验收；未传时按 Run 创建时刻确定并写入不可变 Root Brief。主、子、孙及同 Run 的 follow-up 每次从原 Root Brief 刷新，恢复和跨日不重置。历史 Run 无该字段时按原 `created_at` 推导，不修改旧数据或历史幂等 hash。来源、用户问题和检查点不能覆盖可信研究日；明确的历史日期仍可限定查询区间。HTTP 请求形状不变，不给模型新增改时钟工具。字段验证、传播与验收见 [093](../changes/093-h2-run-research-clock.md)。
+
+显式 H2 金融路径以紧凑的 `task_identity` 将当前 Runtime Brief 中的运行、Thread、Task、Attempt、父子身份及 role/version/depth 传给主/子模型。每次执行从可信 Brief 刷新，不复用旧检查点的 Attempt 身份；该只读说明不改变 CallerContext 或授予新的权限。字段白名单和验证边界见 [054](../changes/054-h2-trusted-task-identity-context.md)。
+
+授权的父材料既可为结构化 JSON，也可为 UTF-8 纯文本；文本可见不等于原文证据或额外文章授权。既有输入容量、按需展开、引用权限及结果来源绑定不变，确定性交接修复与验证见 [057](../changes/057-h2-text-parent-context-handoff.md)。这不放宽模型动作或恢复状态的 JSON 契约。
+
+金融子任务初始化以可信 TaskBrief 中已接收的材料清单为准；兼容请求包装中的内嵌 `input_refs` 不得替换这份清单、丢弃单独授权的父上下文或增加未授权引用。识别兼容包装后仅将该控制包装从来源材料中移除，任务说明与终态追问语义不变；实现修复及边界验证见 [058](../changes/058-h2-legacy-envelope-input-grants.md)。
 
 ## 4. agent.wait 与 agent.status
 
@@ -196,6 +257,8 @@ Thread 内序号保证单 Thread 顺序，全局 event_id 用于恢复同 run �
 
 参数：`{task_ids?:[], thread_ids?:[], after_event_id?:"0", max_events?:100}`；至少一个目标，默认不遍历不授权的整棵树。返回任务/Attempt/子任务摘要、cancel_requested、deadline、模型 profile 快照标识、result_ref、Outbox/blocked 原因、预算 requested/allocated/consumed/local_available/delegated、最新游标及可分页事件。不查询模型，不以 queued 伪装 blocked，不暴露 lease token/凭证。
 
+金融上下文映射保留 wait 目标已有的 status、attempts、budget、deadline_at、cancel_requested 和 dispatch 字段；有无 Result 均不丢失这些 Runtime 事实，见 [045](../changes/045-h2-child-context-contract-parity.md)。终态子任务未用余额会返还父任务，不能只凭 remaining=0 推定预算耗尽。
+
 主 Agent 自身等待也不占有效执行并发名额，否则“根 + 多子任务”的有限并发可能永远等不到空位。
 
 ## 5. agent.send
@@ -210,7 +273,7 @@ Thread 内序号保证单 Thread 顺序，全局 event_id 用于恢复同 run �
 
 `content` 或 `content_ref` 恰好一个。Runtime 将内联 content 持久化为 run 内 Artifact，分配 Message sequence；kind 由 Runtime 固定为 follow_up，模型不能伪造 system 消息。
 
-R2 的终态追问还要求 `follow_up={requested_budget,output_contract,success_criteria}`，按新工作显式申请额度；若 Task 正在运行则不能同时传 follow_up 创建第二份工作。终态追问预算不足时整条命令拒绝，不先留下一个永远不会处理的 queued Message。
+R2 的终态追问要求显式 `follow_up` 工作契约。现行 fixed Run 使用 `follow_up={output_contract,success_criteria,wall_time_ms?}`，禁止 requested_budget，新 Task 按角色获得自身上限，仍共用原 Run 的剩余额度和 deadline，不预占 60。历史 hierarchical Run 仍使用 `follow_up={requested_budget,output_contract,success_criteria}`。若 Task 正在运行则不能同时传 follow_up 创建第二份工作。终态追问预算不足时整条命令拒绝，不先留下一个永远不会处理的 queued Message。
 
 成功返回 `{accepted:true,message_id,sequence,status:"queued",task_id,created_follow_up_task:false}`。这只表示入 Mailbox，不表示模型已经读取。
 
@@ -220,6 +283,14 @@ R2 的终态追问还要求 `follow_up={requested_budget,output_contract,success
 - Run 已终态/Thread closed/取消尚未收敛：拒绝，不能暗中复活已取消工作。
 
 delivered 表示组装进某次执行输入；consumed 与该输入/Checkpoint 同事务确认。崩溃后可以重放未确认消费的消息；保留 delivered_attempt_id，不能仅因发过 HTTP 就宣称模型永久记住。
+
+终态追问的 Runtime TaskBrief 将已保存的 `follow_up.success_criteria` 映射到顶层
+`success_criteria`，不修改历史 brief。金融新 Task 从实际追问 Message 初始化目标，
+不重新执行继承材料中的旧 `research_task`。`finance.root_state.v1.execution.follow_up_context`
+保存 `previous_task_id`、可空的 `previous_result_ref` 和新 `success_criteria`，随 Checkpoint
+恢复并提供给主/子 Agent。旧结果仅提供授权句柄，按需 `result.get`；没有读取时不能算
+已读证据，不能因追问自动扩大输入范围或预算。实现修复与离线证据见
+[047](../changes/047-h2-follow-up-context-handoff.md)。
 
 ## 6. agent.cancel 与 agent.resume
 
@@ -247,7 +318,7 @@ checkpoint_ref 可省略：Runtime 按版本选择最近**有效** Checkpoint，
 
 成功 `{accepted:true,task_id,thread_id,new_attempt_id,resumed_from,status:"pending_dispatch"}`。旧 Attempt 和结果版本保留；新 Attempt 从已确认的执行位置继续，不重做已完成调用。
 
-若旧任务结束时已把未用预算归还父账户，恢复需从该父账户重新预留，并明确返回 allocated_budget；不重复计算已消耗部分，不增加根 grant，不延长原 deadline。无法重新提供请求额度则拒绝或显式提出 budget_reduced 等待调用方接受，不静默降额。
+现行 fixed Run 恢复不重置自身已用计数，也不预占剩余的全部额度；检查自身与整轮余额，并保留 Root 收尾预留，逐次物理调用按实际扣减。历史 hierarchical Run 若旧任务结束时已把未用预算归还父账户，恢复需从该父账户重新预留，并明确返回 allocated_budget；不重复计算已消耗部分，不增加根 grant，不延长原 deadline。无法重新提供请求额度则拒绝或显式提出 budget_reduced 等待调用方接受，不静默降额。
 
 failed/partial/timed_out 的显式恢复必须仍在 Run 剩余 deadline/预算内；没有有效 Checkpoint 返回 checkpoint_invalid，不自动重头开始。cancelled、succeeded、Run 终态拒绝普通 resume。等待条件未满足时不能强制 resume 越过依赖。
 
@@ -289,15 +360,19 @@ summary_ref 指向完整摘要 envelope，内含 summary、key_points、gaps、w
 
 返回 `{result_ref,result_version,status,metadata_status,content,byte_length,sha256,next_offset,has_more,evidence_refs,warnings}`；section 模式必带已存在的 section key，拒绝任意文件路径。
 
+返回及接受结果的通知还可携带 `section_refs`，只暴露调用方获准读取的 section 句柄，不自动展开正文。仅获授兄弟结果的 full artifact 不授予其其他 sections。
+
 - 摘要/状态/关键观点/EvidenceRef/缺口/result_ref 在父 Agent 消费完成通知时始终交付；“写进事件”不等于“已经进入模型输入”，必须有父执行观察/Checkpoint 的交付记录。
 - 短结果自动附全文；长结果按需 get。初始短结果阈值 16 KiB UTF-8 **且**不超父实际剩余上下文输入预算；不够则保留摘要+引用并明确未全文注入，不截断伪装完整。阈值是可调参数，不证明最佳值。
+- [040](../changes/040-h2-on-demand-result-expansion.md)修复金融桥接的隐藏回读：通知未附全文时只保留摘要、引用与 `full_read=false`，不自动 `result.get`；由主 Agent 显式选择展开，已附短全文仍按原机制交接。
 - 大结果 full 模式可连续分页；offset/next_offset 使用 Unicode 字符偏移，byte_length 是整个产物 UTF-8 大小，两者单位明确不同。摘要/全文 hash 对整个对应产物，页携带相同版本；不做页间重新摘要。
 - Runtime 记录 result.summary_viewed/section_viewed/full_viewed，包含父 Attempt、版本、区间；只取一页不能写 full_viewed，应记 result.page_viewed，最后连续覆盖完整区间才可记 full_viewed。
+- [039](../changes/039-h2-result-read-coverage.md)修复逐动作换 Attempt 时的累计：同一 Task 的连续页可跨 Attempt 累计，页事件保留真实 Attempt，完成事件归于补齐覆盖的 Attempt；不同 Task、Agent/用户读取、结果版本及 view/section 不混合。旧 Agent 页可从真实 Attempt 还原 Task，不将用户导出推定为 Agent 已读。
 - “viewed”只证明返回/组装观察，不证明模型理解，更不强制父 Agent 把所有已读文章写进最终答案。
 
 ## 8. 内部接口：Repository、Dispatcher、Worker、Adapter
 
-这些内部接口不直接注册给模型。Repository、Dispatcher、脚本 Worker 已有独立实现；[015](../changes/015-harness-v2-model-execution.md)又接通单次异步 ModelAdapter、物理请求账本和 Worker 可信能力入口。显式金融调度组合入口见 [017](../changes/017-harness-v2-finance-loop-integration.md)，可选 HTTP 边界见 [018](../changes/018-harness-v2-http-api.md)；默认金融入口、生产 Worker 和真实金融数据接入仍未切换，也没有付费模型验收。逐项底座边界见 [014](../changes/014-harness-v2-foundation.md)，以下仍是完整目标契约，不以已有部分代码替代剩余设计。
+这些内部接口不直接注册给模型。Repository、Dispatcher、脚本 Worker 已有独立实现；[015](../changes/015-harness-v2-model-execution.md)又接通单次异步 ModelAdapter、物理请求账本和 Worker 可信能力入口。显式金融调度组合入口见 [017](../changes/017-harness-v2-finance-loop-integration.md)，可选 HTTP 边界见 [018](../changes/018-harness-v2-http-api.md)；默认金融入口和生产 Worker 仍未切换。后续显式语料路径的接入见 [032](../changes/032-h2-durable-action-continuation.md)，真实模型定向结果见 [R6](../acceptance/harness-v2-live-acceptance-r6-20261019.md)，不代表全量业务、真实 Redis 或生产验收。逐项底座边界见 [014](../changes/014-harness-v2-foundation.md)，以下仍是完整目标契约，不以已有部分代码替代剩余设计。
 
 | 接口 | 输入 -> 输出 | 契约 |
 | --- | --- | --- |
@@ -315,9 +390,27 @@ summary_ref 指向完整摘要 envelope，内含 summary、key_points、gaps、w
 
 ModelRequest：call_id、不可变模型快照、messages、输出动作契约、context/output 限制、timeout 配置、流式开关、可信凭证解析引用（不序列化真实密钥）。每次发送前 T04 预约一次物理请求，重连/重试也计次数。
 
+[041](../changes/041-h2-confirmed-unsent-settlement.md)修复取消或租约失效后的确认未发送记账：
+原执行者可凭完整原身份和 lease token 结算未发送预约，不恢复执行权限；仅当 `started_at` 为空且预约仍为 reserved/unknown 时幂等退款。
+退款回原调用预算，已终止子任务的余额沿既有父级链归还；已开始或在途未知的请求不退款，失联本身也不触发自动退款。
+
 ModelEvent：started / text_delta / action_candidate / usage / completed / failed；含 call_id 和调用内递增 seq。未完成 JSON 的流式片段只展示/保存，不执行工具；最终候选经现有 JSON 契约验证才能动作。公开分析输出和模型私有推理通道分离，不把隐藏思考复制为 TaskBrief 或父结果。
 
-归一化 ModelError：transport_error/provider_error/contract_error/quota_error/timeout/cancelled，携带 retryable、provider_request_id、脱敏细节、usage/计费是否未知。只对明确允许的传输故障做有界同模型重试；重试建立新 Attempt，旧记录不覆盖。格式/权限/额度/逻辑失败交父 Agent；结果元数据补交是基线允许的一次契约补交，不是假称网络重试。
+实际 Schema 校验失败时，failed 事件可携带 `validation_stage` 和有界的
+`validation_errors`（仅 loc/type/msg，最多 12 项；排除 input/context/URL 并脱敏）。
+可信执行能力只转交这些白名单字段及真实 call_id/output_ref，供已批准的一次同模型补正
+定位错误；不因此接受非法动作或增加额度。金融输入中的 `next_action_key` 是只读上下文值，
+仅用于工具 Schema 明确声明的 arguments.dispatch_key/idempotency_key，不是动作顶层或
+state_update 字段。实现缺口及修复见 [044](../changes/044-h2-action-validation-feedback.md)。
+
+归一化 ModelError：transport_error/provider_error/contract_error/quota_error/timeout/cancelled，携带 retryable、provider_request_id、脱敏细节、usage/计费是否未知。只对明确允许的传输故障做有界同模型重试；常规任务级重试建立新 Attempt，旧记录不覆盖。048 的补正传输重发是同 Attempt 内的明确例外，仍由单次请求能力逐次检查权限和记账。格式/权限/额度/逻辑失败交父 Agent；结果元数据补交是基线允许的一次契约补交，不是假称网络重试。
+
+失败诊断经 Worker 到 SQLite 持久化，不只传错误类别：Attempt 的 `error_message`
+为固定脱敏说明，`task.failed` 保存真实 `attempt_id` 和白名单校验诊断。
+`agent.status` / `agent.wait` 的失败 Task 可含 `failure_diagnostic`，独立于事件翻页游标，
+且只匹配当前 Attempt；恢复后的新 Attempt 不继承旧失败。金融上下文保留该诊断，
+不把失败输出转换为有效 ResultRef 或证据。字段边界、兼容与验证见
+[070](../changes/070-h2-terminal-failure-diagnostics.md)。
 
 五层 timeout：连接、读取 idle、单次调用总时长、Attempt 截止、Task/Run deadline，实际执行取更早边界；stream 有数据也不能无限拖过总时长。参数初值引用现有运行配置并进入快照，不在本文重新调小研究预算。
 
@@ -333,6 +426,15 @@ ModelEvent：started / text_delta / action_candidate / usage / completed / faile
 | context_manifest / parent_span_id / span_id | 进入新 TaskBrief、Checkpoint 和执行 Trace 关联 | 不捏造旧 parent_run_id 的可验证事实 |
 | 当前 ModelAdapter.complete | 新 transport adapter 包装现有 gateway，收敛隐藏重试配置并暴露实际请求数 | 不改模型 profile、协议或默认收费选择 |
 | 最终答案/审核/候选保留 | root 仍走原金融交付策略；结果失败/partial 作为真实观察交给主 Agent | 调度 succeeded 不替代金融验证，不丢失败时完整正文 |
+
+既有来源交接的实现修复见 [062](../changes/062-h2-delegated-source-lineage.md)：金融研究结果的 `finance_sources` section 保存按已接纳 EvidenceRef 绑定的实际文章读取元数据（作者、日期、版本、行范围、原读取 Task）。父任务合并这些事实，不复制子任务的 coverage/review/use_status；是否 used 仍由父任务终稿的实际证据决定。来源元数据返回不等于父任务已完整读取或理解子任务的分析正文，也不会扩大工具或文章授权。
+
+[074](../changes/074-h2-delegated-reference-views.md)落实可用引用与来源身份的边界：子结果信封中的
+原始 EvidenceRef 仅用于溯源，不因返回而成为父任务已授权的原文材料。父任务绑定收到的全文
+wrapper，或完整读取后的 ResultRef；引用分析不冒充直接读过原文。Runtime 的
+`delegated_source_refs`/`local_evidence_refs` 是真实观察的恢复索引，不是模型申报权限。
+旧检查点从已有观察恢复一次；旧账本的 `source_provenance` 行保留历史，但不得被状态增量
+或终稿重新当作可用证据。明确授权和本任务实际读取的相同引用仍可用；原权限和全文分页校验不变。
 
 根 Agent 也须有真实 h2 Thread/Task/Attempt，不能永远留在同步 Python 栈上却声称父 Agent wait 可恢复。Queue/数据库层完成后再接业务入口，保留 1.0 feature flag 和回退测试；此处的回退指代码路径，不是自动切付费模型。
 
@@ -391,6 +493,218 @@ planned article an answer source. Missing metadata remains visible as
 `incomplete_metadata`; a malformed terminal patch must not discard the candidate
 answer.
 
+### 8.4 Durable action continuation and research children
+
+[032](../changes/032-h2-durable-action-continuation.md) applies the approved
+per-action boundary to the actual corpus entry: save the prepared action,
+execute one bounded action, persist its observation, then Continue(checkpoint).
+The transaction suspends the old Attempt, saves the checkpoint and creates the
+next Attempt/Outbox for the same Task. ACK follows commit. This is not a model
+retry, a fresh budget or a new Task. Only explicit agent.wait suspends on child
+completion; agent.spawn returns its durable receipt and continues immediately.
+
+Research roles at depth one/two use this same loop and optional state_update
+delta, but deliver finance.research_result.v1 rather than the Root answer
+contract. Role tools intersect the parent permission snapshot; article access is
+limited to explicit input-material IDs. Ordinary article tools do not create
+research Threads. The existing legacy delegate remains an implicit wait.
+
+Local artifact expansion is a domain tool, separate from accepted Task results:
+
+```json
+{"type":"tool_call","tool_name":"material.get","arguments":{"material_ref":"art_known","offset":0,"limit":16000}}
+```
+
+Its strict input permits only material_ref (required string, at most 160 chars),
+offset (integer >= 0, default 0) and limit (integer 1..64000, default 16000).
+The response has tool/material_ref/content/has_more/next_offset. Existing
+read_input grants apply; paths, cross-run references and ungranted siblings
+remain forbidden. result.get retains its frozen accepted-result contract.
+Contiguous full-result pages with a consistent source hash can be reassembled
+from recorded observations, without an implicit reread or another model call.
+
+Section 7.1 applies to research results too: preserve the whole valid candidate
+before reference checks. Invalid metadata yields partial/incomplete_metadata
+and warnings with invalid evidence bindings excluded, not loss of the analysis.
+Actual cancellation/stale lease and storage failures keep their original fences.
+
+### 8.5 Immutable research anchor repair
+
+[073](../changes/073-h2-framework-informed-anchor-repair.md) narrows recovery for
+an already parsed, otherwise valid research final with non-verbatim anchors.
+Its temporary final.output is finance.h2.anchor_patch.v1: anchors contains only
+link_index (strict integer >=0) and text (nonblank string). No other patch or
+outer action fields are permitted. Indices must be unique and refer only to
+original invalid anchors; text must occur in frozen content/candidate_answer.
+The Runtime preserves all other candidate fields, including refs and quotes,
+then validates the assembled ResearchResult through normal source checks.
+Unrepaired bindings are excluded, with full analysis and explicit partial/
+incomplete_metadata warnings retained. This is not semantic verification.
+The correction limit follows the Run snapshot (102: five for new Runs, one for
+older snapshots); one extra identical transport resend is shared per decision.
+All corrections and that retransmission remain within the
+same model, budget, deadline and physical-call ledger. Raw, patch and assembled
+artifacts remain distinct. Other failures retain the 065 isolation contract.
+
+[076](../changes/076-h2-anchor-correction-action-schema.md) gives this correction
+a patch-only whole action_json_schema and action_example. The required outer
+type=final/output envelope is generated and checked from one strict model;
+final_output_json_schema describes only its output. Bare patches are not wrapped
+automatically. This changes feedback clarity, not public parsing or retry limits.
+
+### 8.6 Public JSON string syntax normalization
+
+[078](../changes/078-h2-json-string-control-normalization.md) permits standard JSON
+escaping of otherwise raw U+0000..U+001F within double-quoted string literals in a
+complete H2 agent_action.v1 public response, after the existing outer fence step.
+Only a JSON object candidate starting with `{` enters this step; the existing
+022 text-tool compatibility path is not normalized or widened.
+Decoded values of legal JSON and the raw output artifact remain unchanged.
+[087](../changes/087-h2-framework-informed-json-escape-repair.md) additionally
+escapes illegal backslashes inside string literals as literal backslashes,
+including malformed Unicode escapes. Legal JSON escapes remain byte-for-byte
+unchanged. No delimiter completion or financial analysis rewrite is permitted.
+
+Object boundaries follow [083](../changes/083-h2-bounded-action-json-recovery.md):
+unfenced output selects the first complete object, optionally after a bounded
+XML-tag-only wrapper, and discards all trailing model text. Never skip an invalid
+first action to execute a later one. A normalized outer Markdown fence must
+contain exactly one complete object with no extra transcript or second object.
+Natural-language prefixes, truncated first objects and invalid action fields
+remain rejected; all existing source/argument/permission checks still apply.
+This makes no extra request. The allowlisted json_string_controls and
+json_string_invalid_escapes counts are attached as public_output_normalization to model.call_finished and a successful
+ModelResponse.metadata; no provider text or arbitrary metadata is copied.
+The counts must be strict integers from 1 through 1,000,000; zero, booleans,
+out-of-range values and other types are ignored, and unknown fields are dropped.
+[088](../changes/088-h2-action-repair-diagnostic-boundary.md) binds successful
+repair counts to the selected object only; discarded-tail repairs never inflate
+them. Boundary metadata reports the original discarded character count.
+
+### 8.7 Explicit Public Source Binding
+
+[079](../changes/079-h2-public-source-adapter.md) adds an opt-in public_sources
+binding to the corpus service. web.search/web.open reuse the legacy strict input
+models and safe HTTP implementation. Binding does not grant permission: both
+composition and the Task permission snapshot must allow execution. Defaults stay
+offline. Each operation has an isolated legacy evidence ledger; its evidence_id
+is not a usable H2 reference. Successful nonempty page text becomes a durable H2
+source artifact. Search leads, unavailable results and unsupported formats do not.
+Research quote checks apply to that text. Public provenance carries kind, URL,
+response hash, retrieval/publication times, line ranges, pagination and original
+reader through finance_sources, never through article_states. Delegation retains
+the existing provenance-versus-usable-reference boundary and original budgets.
+The acceptance runner's --public-sources enables only actually bound capabilities;
+market history, private context and fault-injection blockers remain independent.
+
+### 8.8 Persisted URL Secret Scan
+
+[081](../changes/081-public-url-secret-scan-mvp.md) keeps the generic artifact/context
+secret scanner, but distinguishes ordinary public URL query parameters from
+credential parameters. Pagination/filter keys such as `page` may persist with
+public source text; authentication keys, Bearer/API-key patterns, URL userinfo,
+credential-shaped fields and control characters remain rejected. This is a
+security false-positive repair, not a public-source bypass.
+
+### 8.9 Durable Market Sources
+
+[089](../changes/089-h2-durable-market-adapter.md) adds an explicit optional
+market_sources binding and --market-sources acceptance flag. Reuse the legacy
+market.catalog/snapshot/metrics/series input Schemas, acquisition and deterministic
+calculations. Both binding and Task tool permission are required; defaults stay
+offline. A snapshot is stored before success as finance.h2.market_snapshot.v1;
+snapshot_id is its immutable H2 Artifact handle, source_snapshot_id the original
+provider snapshot identity. metrics/series restore that authorized frozen
+Artifact after a worker restart, without refetch or a process-global cache.
+Children require explicit snapshot input grants; Root retains existing run-wide,
+not cross-run, authority. Nested provenance never adds a grant.
+
+Only nonempty metrics/series reads form public_market_data source observations.
+Canonical text/hash include units, period, original session/baseline metadata,
+source status, retrieved_at and collected_at. Series retain provider retrieval
+time; composite metrics use collection time and retain per-instrument times.
+Strip legacy evidence_id values; bind H2 source refs and preserve original readers
+through both delegation levels. Catalog/receipts, empty responses and acquisition
+failures are not price evidence. Do not invent article states, causal verification,
+realtime quotes or complete-period returns from partial data. Quote failures
+retain full analysis under existing partial-result semantics. No new retry,
+budget, DDL, model policy or default-route change.
+
+### 8.10 Durable Personal Context
+
+[091](../changes/091-h2-durable-personal-context.md) defines optional
+personal_sources and --personal-sources. personal.catalog accepts no arguments;
+Root captures immutable per-source snapshots, children list only directly
+granted sources. Catalogs have sources[{context_id, personal_kind, source_path,
+source_hash, file_hash, captured_at, total_chars, optional as_of/approximate}]
+and unavailable[{source_path,code}], never bodies or evidence of reading.
+Completed catalogs reuse persisted action observations on recovery.
+
+context.open reuses the strict legacy context_id/offset/limit input, with an H2
+Artifact handle as context_id. Return exact text, returned_chars/next_offset/
+has_more and the frozen identity/version. company_wiki_search reuses query/top_k
+and existing lexical ranking over authorized frozen facts, not ambient files.
+Only nonempty views/matches become personal_context evidence, with actual reader
+and page/source versions in execution.personal_sources. Preserve that lineage
+through both delegation depths, never as public_sources or article_states.
+Granted raw snapshot inputs remain compact descriptors until context.open.
+
+Personal context is private background; current_holdings.md is authoritative
+over historical Wiki holdings. Preserve as_of/approximate and unavailable data;
+no invented cost/P&L/risk profile, writeback, automatic refresh, new output gate,
+model/budget change or default-route switch. Full candidate preservation and
+quote checks follow the existing research-result contract.
+
+### 8.11 Model Input Payload Views
+
+[095](../changes/095-h2-context-payload-deduplication.md) refines 086's input
+presentation only. Exact duplicate complete materials retain every handle and
+use payload_material_ref to point to the one visible full copy. A successful
+business action receipt may point to an identical typed tool-result material
+instead of repeating its body. Different source versions/readers/wrappers and
+failed or scheduler payloads are not collapsed into that material.
+
+normalized_observations and action_observations are the explicit typed views.
+The legacy observations index retains order/status/identity, using payload_view
+{view,observation_ref} for duplicated payload/summary/content/description values.
+These aliases are not new evidence, offload events or permission grants. If a
+canonical body is actually omitted under configured pressure, expand its
+authorized material.get handle. Root and research child both fit their final
+prompt with the same routine; an unfittable input fails locally before sending.
+All persisted observations, artifact bytes, checkpoints and read/evidence
+accounting remain unchanged. No new threshold or semantic delivery gate.
+
+### 8.12 Article Author Catalog
+
+[096](../changes/096-h2-author-catalog-parity.md) restores the legacy catalog
+capability in H2 article.list. Inputs and articles stay unchanged. Add
+authors[{author,article_count,latest_published_at}] and authors_scope.
+corpus_all_active is the existing whole-active-corpus SQLite catalog, independent
+of list filters/limit, available only to an unrestricted Root. A child with
+explicit grants gets returned_authorized_articles: statistics over only its
+returned authorized rows, never the global catalog or all granted articles.
+A compatible injected corpus without list_authors reports returned_articles,
+not invented corpus totals. Empty scoped results yield no authors. Statistics
+do not imply article-body reads, evidence support or new grants. Historical
+cached results without these additive fields remain valid.
+
+### 8.13 Run Instruction Rules
+
+[101](../changes/101-h2-external-agent-rules.md) externalizes H2 finance role and
+instruction assets without changing Spawn, public actions, result Schemas or
+permissions. New finance Runs save an immutable instruction_rules Artifact;
+Root Brief carries instruction_rules_ref and its artifact SHA-256. The trusted
+execution brief resolves the same bundle for every Task depth and resumed Attempt.
+These internal fields are not model-controlled Spawn parameters or evidence grants.
+
+Only selected instructions, the compact role catalog and bundle digest/version
+enter the financial model input. Do not inject the full asset pack into its user
+context or count it as source material. New Run creation replay retains the first
+pack; current file edits affect new Runs only. Invalid declared snapshots fail
+visibly rather than falling back. Older Runs without the fields use the fixed
+pre-101 compatibility pack, explicitly versioned, not a claim to reconstruct every
+historical prompt. Existing DDL, Redis messages and access boundaries are unchanged.
+
 ## 9. 设计级验收矩阵
 
 | 编号 | 检查内容 | 验收证据 |
@@ -419,6 +733,25 @@ answer.
 初始门槛：状态/权限/fencing/预算守恒等安全不变量零违规，固定离线脚本同种子至少重复 20 轮无孤儿有效任务；调度 p50/p95、恢复延迟、物理请求数单独报告，不预先捏造性能 SLA。金融质量仍按既有验收，不把调度成功率当答案准确率或商业化证明。
 
 ## 10. 本轮审查与下一步边界
+
+金融角色配置与文章级核验契约见 [103](../changes/103-h2-agent-profile-and-review-loop.md)，
+通用 Profile 与可组合专家见 [104](../changes/104-h2-general-agent-and-portable-profiles.md)，
+模型侧轻量派发与专业字段分层见 [106](../changes/106-h2-profile-aware-spawn-contract.md)。
+新 v4 Run 仍由同一执行循环承载 general 与专家 Profile。模型侧 `agent.spawn` 的核心字段为
+`task_name` 和 `message`；`profile` 默认 `general`，授权材料用 `input_refs` 明确传入。
+`task_instructions`、`success_criteria`、`output_contract`、上下文引用、调度偏好和模型选择
+作为可选字段；非 general 专家须提供 `success_criteria`。Runtime 生成 `dispatch_key`、
+解析当前 Profile 版本，并在省略时选取 Profile 默认输出合同，再转换成既有内部 `Spawn`。
+SQLite 表结构与内部调度字段不因模型侧精简而改变。
+
+Profile 清单只向 Root 展示用途和输入要求，不展示版本号或全部工具白名单；Root 可按需调用
+`tool.describe(name="agent.spawn")` 读取参数和当前 Profile 摘要。`general` 返回
+`finance.task_result.v1`，专家使用已注册的专业返回合同。配置不能增加代码未提供的工具或校验器。
+Analyst 专属核验设置位于 `profile_options.review_mode` 和 `profile_options.review_options`，
+分别控制 `required | auto | off` 与可选范围、说明及更小轮数；省略时按 Analyst Profile 默认处理，
+默认及硬上限为五轮。Runtime 展开成持久化 Brief.review_policy；这些字段对其他 Profile 无效。
+核验设置不扩大来源权限；版本绑定及逐项处置沿用 103。已启动 v1/v2/v3 Run 仍按自身冻结快照
+使用旧派发 Schema，不受 v4 模型侧入口影响。
 
 文档引用、DDL 和示例格式检查只证明契约可检验，不证明运行实现。R1/R2/R3 已确认，后续代码、故障验证与金融接入的实际进度分别记在 014，不回写 draft1 时点的验证结果。
 

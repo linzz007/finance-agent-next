@@ -194,12 +194,38 @@ def _run_h2(tmp_path: Path, corpus: ArticleCorpus, article_id: str) -> tuple[dic
         calls.append(request)
         index = len(calls)
         if index == 1:
-            payload = {"type": "tool_call", "tool_name": "article.list", "arguments": {"limit": 10}}
+            payload = {
+                "type": "tool_call",
+                "tool_name": "article.list",
+                "arguments": {"limit": 10},
+                "state_update": {
+                    "research_plan": {
+                        "revision": 1,
+                        "goals": ["read and explain the author's conditional viewpoint"],
+                    },
+                    "coverage": {"gaps": ["The requested article has not been read yet."]},
+                    "review": {"status": "pending", "scope": "source_semantics"},
+                    "delivery": {"proposed_status": "researching"},
+                },
+            }
         elif index == 2:
             payload = {
                 "type": "tool_call",
                 "tool_name": "article.read",
                 "arguments": {"article_id": article_id, "start_line": 1, "limit": 100},
+                "state_update": {
+                    "research_plan": {
+                        "revision": 2,
+                        "goals": ["attribute the viewpoint and preserve its conditions"],
+                    },
+                    "article_updates": [{
+                        "article_id": article_id,
+                        "relevance": "primary",
+                        "requested_depth": "deep",
+                        "reason": "The article contains the requested viewpoint.",
+                    }],
+                    "coverage": {"gaps": ["External market evidence has not been requested."]},
+                },
             }
         else:
             state = _finance_user_payload(request)
@@ -220,11 +246,39 @@ def _run_h2(tmp_path: Path, corpus: ArticleCorpus, article_id: str) -> tuple[dic
                     "answer_audit_coverage": "complete",
                     "semantic_review": "complete",
                 },
+                "state_update": {
+                    "research_plan": {
+                        "revision": 3,
+                        "goals": ["attribute the conditional viewpoint and preserve its limits"],
+                    },
+                    "evidence_additions": [{
+                        "claim_id": "tt-conditional-view",
+                        "evidence_ref": refs[0],
+                        "relation": "supports",
+                        "source_kind": "article",
+                        "scope": "TT/articles/gold.md:L3",
+                        "certainty": "conditional",
+                    }],
+                    "coverage": {
+                        "gaps": ["No external market evidence was supplied."],
+                        "evidence_refs": refs,
+                        "stop_rationale": "The local article was read and the query only requests source attribution.",
+                    },
+                    "review": {
+                        "status": "complete",
+                        "scope": "source_semantics",
+                        "evidence_refs": refs,
+                    },
+                    "delivery": {
+                        "proposed_status": "ready",
+                        "reason": "The answer preserves the author's conditions.",
+                    },
+                },
             }
         return httpx.Response(200, json=_chat(payload, index))
 
     config = SchedulerConfig(
-        stream_name="finance-agent-next:c16:compatibility",
+        stream_name="finance-agent-next:c16:compatibility", budget_policy="hierarchical",
         publish_attempts=2,
         lease_ms=60000,
     )
@@ -266,14 +320,15 @@ def _run_h2(tmp_path: Path, corpus: ArticleCorpus, article_id: str) -> tuple[dic
         query=QUERY,
         selected_profile="fixture",
         allowed_profiles=["fixture"],
-        tools=["agent.spawn", "agent.wait", "agent.status", "result.get"],
+        tools=["agent.spawn", "agent.wait", "agent.status", "result.get",
+               "article.list", "article.read", "article.search", "article.claims", "tool.describe", "material.get"],
     )
     status = asyncio.run(service.run_until_terminal(handle, max_cycles=20))
     assert len(calls) == 3
     return status, {"repository": repository, "handle": handle}, {"calls": calls}
 
 
-def test_c16_legacy_and_h2_preserve_source_semantics_without_claiming_h2_review(tmp_path, monkeypatch):
+def test_c16_legacy_and_h2_preserve_source_semantics_and_state_update_metadata(tmp_path, monkeypatch):
     corpus, article_id = _write_compatibility_corpus(tmp_path, monkeypatch)
     legacy_result, legacy_steps = _run_legacy(article_id, monkeypatch)
     h2_status, h2_context, _ = _run_h2(tmp_path, corpus, article_id)
@@ -348,10 +403,25 @@ def test_c16_legacy_and_h2_preserve_source_semantics_without_claiming_h2_review(
     assert candidate["output"]["verification_status"] == "partial"
     assert candidate["output"]["answer_audit_coverage"] == "complete"
 
-    # H2 currently records a candidate and delivery state, but does not yet
-    # map model review metadata into FinanceRootState.review.  This is the
-    # explicit 019 design gap; the test prevents silently treating it as a
-    # completed audit while still proving source/answer semantics are intact.
-    assert state["review"] is None
+    # The model may supply compact metadata, but Runtime owns source facts and
+    # the final delivery transition.  Review and coverage must survive the
+    # state-update merge without being mistaken for external truth.
+    persisted_evidence_refs = [
+        item["evidence_ref"]
+        for item in json.loads(result["evidence_refs_json"])
+    ]
+    assert state["research_plan"]["revision"] == 3
+    assert state["coverage"]["evidence_refs"] == persisted_evidence_refs
+    assert state["coverage"]["gaps"] == ["No external market evidence was supplied."]
+    assert state["review"]["status"] == "complete"
+    assert state["review"]["scope"] == "source_semantics"
+    assert state["review"]["evidence_refs"] == persisted_evidence_refs
+    model_evidence = [
+        item for item in state["evidence_ledger"] if item.get("claim_id") == "tt-conditional-view"
+    ]
+    assert len(model_evidence) == 1
+    assert model_evidence[0]["certainty"] == "conditional"
+    assert model_evidence[0]["evidence_ref"] in persisted_evidence_refs
     assert state["delivery"]["status"] == "ready"
+    assert state["delivery"]["metadata_status"] == "complete"
 

@@ -8,12 +8,14 @@ from pathlib import Path
 
 import fakeredis
 import httpx
+import pytest
 
 from policy_impact.dispatch import DispatchRepository, FinanceHarnessV2Service, SchedulerConfig
+from policy_impact.dispatch.finance_agent import ROOT_TOOLS
 from policy_impact.dispatch.model_execution import GatewayModelAdapter
 from policy_impact.dispatch.transport import RedisStreams
 
-TOOLS = ["agent.spawn", "agent.wait", "agent.status", "result.get"]
+TOOLS = list(ROOT_TOOLS)
 
 
 class FixtureCorpus:
@@ -85,8 +87,18 @@ def _json_user_payload(request: httpx.Request) -> dict:
     raise AssertionError("finance root user payload was not sent")
 
 
-def test_model_driven_finance_path_reads_then_delivers_with_durable_resume(tmp_path: Path):
-    corpus = FixtureCorpus()
+@pytest.mark.parametrize(
+    "state_mode", ["legacy", "complete", "bad-type", "noncompact", "forged-read", "direct-source-ref"]
+)
+def test_model_driven_finance_path_reads_then_delivers_with_durable_resume(
+    tmp_path: Path, state_mode: str,
+):
+    class CorpusWithUnreadArticle(FixtureCorpus):
+        def list_articles(self, *, limit=100, **filters):
+            rows = super().list_articles(limit=limit, **filters)
+            return [*rows, {**rows[0], "article_id": "article_unread"}][:limit]
+
+    corpus = CorpusWithUnreadArticle()
     calls = []
 
     def handler(request: httpx.Request):
@@ -98,19 +110,49 @@ def test_model_driven_finance_path_reads_then_delivers_with_durable_resume(tmp_p
                 "tool_name": "article.list",
                 "arguments": {"limit": 10},
             }
+            if state_mode != "legacy":
+                payload["state_update"] = {
+                    "research_plan": {"revision": 1, "goals": ["explain conditional reasoning"]},
+                    "coverage": {"gaps": ["article not read"]},
+                    "review": {"status": "pending", "reason": "await source"},
+                    "delivery": {"proposed_status": "researching"},
+                }
         elif index == 2:
+            state = _json_user_payload(request)
+            if state_mode != "legacy":
+                assert state["research_plan"]["revision"] == 1
+                assert state["coverage"]["gaps"] == ["article not read"]
+                assert state["review"]["status"] == "pending"
+                assert state["delivery"]["proposed_status"] == "researching"
             payload = {
                 "type": "tool_call",
                 "tool_name": "article.read",
                 "arguments": {"article_id": corpus.article["article_id"], "start_line": 1, "limit": 100},
             }
+            if state_mode != "legacy":
+                payload["state_update"] = {
+                    "research_plan": {"revision": 2, "goals": ["read and explain conditions"]},
+                    "article_updates": [{
+                        "article_id": corpus.article["article_id"],
+                        "relevance": "primary", "requested_depth": "deep",
+                        "reason": "contains the requested reasoning",
+                    }],
+                }
         else:
             state = _json_user_payload(request)
             refs = []
             for material in state.get("materials", []):
                 if '"tool":"article.read"' in material.get("payload", ""):
-                    refs.append(material["material_ref"])
+                    if state_mode == "direct-source-ref":
+                        refs.extend(item["evidence_ref"] for item in state["evidence_ledger"])
+                    else:
+                        refs.append(material["material_ref"])
             assert refs, "the final root decision did not receive the read result"
+            if state_mode != "legacy":
+                assert state["research_plan"]["revision"] == 2
+                assert state["article_states"][0]["read_status"] == "complete"
+                assert state["article_states"][0]["requested_depth"] == "deep"
+                assert state["review"]["reason"] == "await source"
             payload = {
                 "type": "final",
                 "output": {
@@ -119,10 +161,29 @@ def test_model_driven_finance_path_reads_then_delivers_with_durable_resume(tmp_p
                     "evidence_refs": refs,
                 },
             }
+            if state_mode == "complete":
+                payload["state_update"] = {
+                    "evidence_additions": [{
+                        "claim_id": "conditional-view", "evidence_ref": refs[0],
+                        "relation": "supports", "source_kind": "article",
+                        "scope": "the read article", "certainty": "conditional",
+                    }],
+                    "coverage": {"gaps": [], "evidence_refs": refs, "stop_rationale": "source read"},
+                    "review": {"status": "complete", "evidence_refs": refs},
+                    "delivery": {"proposed_status": "ready"},
+                }
+            elif state_mode == "bad-type":
+                payload["state_update"] = "not an object"
+            elif state_mode == "noncompact":
+                payload["state_update"] = {"coverage": {"body": "not compact metadata"}}
+            elif state_mode == "forged-read":
+                payload["state_update"] = {"article_updates": [{
+                    "article_id": corpus.article["article_id"], "read_status": "complete",
+                }]}
         return httpx.Response(200, json=_chat(payload, index))
 
     config = SchedulerConfig(
-        stream_name="finance-agent-next:fixture:model-driven",
+        stream_name="finance-agent-next:fixture:model-driven", budget_policy="hierarchical",
         publish_attempts=2,
         lease_ms=60000,
     )
@@ -169,13 +230,15 @@ def test_model_driven_finance_path_reads_then_delivers_with_durable_resume(tmp_p
 
     status = asyncio.run(service.run_until_terminal(handle, max_cycles=20))
 
-    assert status["tasks"][0]["status"] == "succeeded"
+    invalid_update = state_mode in {"bad-type", "noncompact", "forged-read"}
+    final_status = "partial" if invalid_update else "succeeded"
+    assert status["tasks"][0]["status"] == final_status
     assert len(calls) == 3
     assert len(status["tasks"][0]["attempts"]) == 3
     assert [attempt["status"] for attempt in status["tasks"][0]["attempts"]] == [
         "suspended",
         "suspended",
-        "succeeded",
+        "failed" if invalid_update else "succeeded",
     ]
     with repository.db.connection() as connection:
         model_calls = connection.execute(
@@ -202,7 +265,26 @@ def test_model_driven_finance_path_reads_then_delivers_with_durable_resume(tmp_p
     saved_state = json.loads(repository.artifacts.read(state_artifact))
     assert saved_state["phase"] == "delivery"
     assert saved_state["article_states"][0]["read_status"] == "complete"
+    assert saved_state["article_states"][1]["article_id"] == "article_unread"
+    assert saved_state["article_states"][1]["read_status"] == "unread"
+    assert saved_state["article_states"][1]["use_status"] == "undecided"
     assert evidence_refs and evidence_refs[0]["evidence_ref"]
+    result_ref = status["tasks"][0]["result_ref"]
+    full = repository.result_get(service.caller(handle), result_ref, view="full")
+    assert full["content"] == "The author presents a conditional view grounded in the read article."
+    if state_mode != "legacy":
+        assert saved_state["research_plan"]["revision"] == 2
+        assert saved_state["article_states"][0]["use_status"] == "used"
+    if state_mode == "complete":
+        assert saved_state["execution"]["metadata_status"] == "complete"
+        assert saved_state["coverage"]["gaps"] == []
+        assert saved_state["review"]["status"] == "complete"
+        assert any(item.get("claim_id") == "conditional-view" for item in saved_state["evidence_ledger"])
+    if invalid_update:
+        assert saved_state["delivery"]["metadata_status"] == "incomplete_metadata"
+        assert "state_update_invalid" in saved_state["delivery"]["warnings"]
+        assert "state_update_missing" not in saved_state["execution"]["state_update_warnings"]
+        assert saved_state["review"]["status"] == "pending"
 
 
 def test_article_read_is_bounded_and_does_not_return_full_source():
@@ -222,7 +304,11 @@ def test_article_read_is_bounded_and_does_not_return_full_source():
     assert payload["has_more"] is True
 
 
-def test_analyst_delegate_receives_authorized_material_and_returns_research_result(tmp_path: Path):
+@pytest.mark.parametrize("role,role_version", [
+    ("analyst", "1.0.0"), ("analyst", "2.0.0"),
+    ("verifier", "1.0.0"), ("skeptic", "1.0.0"),
+])
+def test_analyst_delegate_receives_authorized_material_and_returns_research_result(tmp_path: Path, role, role_version):
     corpus = FixtureCorpus()
     calls = []
     read_ref = None
@@ -233,6 +319,8 @@ def test_analyst_delegate_receives_authorized_material_and_returns_research_resu
         index = len(calls)
         state = _json_user_payload(request) if index in {1, 2, 3, 5} else {}
         if index == 1:
+            assert state["delegation_policy"]["preferred_tool"] == "agent.spawn"
+            assert state["task_budget"]["budget"]["allocated"] == 600
             payload = {"type": "tool_call", "tool_name": "article.list", "arguments": {"limit": 10}}
         elif index == 2:
             payload = {
@@ -241,6 +329,10 @@ def test_analyst_delegate_receives_authorized_material_and_returns_research_resu
                 "arguments": {"article_id": "article_alpha", "start_line": 1, "limit": 100},
             }
         elif index == 3:
+            expected_budget = {"model_calls": 4, "wall_time_ms": 600000} if role == "analyst" else {
+                "model_calls": 1, "wall_time_ms": 120000,
+            }
+            assert state["delegation_policy"]["legacy_delegate"]["requested_budget_by_role"][role] == expected_budget
             read_ref = next(
                 material["material_ref"]
                 for material in state["materials"]
@@ -260,9 +352,28 @@ def test_analyst_delegate_receives_authorized_material_and_returns_research_resu
                     "reading_request": {"material_ref": read_ref, "depth": "deep"},
                 },
             }
+            if role_version == "1.0.0":
+                payload = {
+                    "type": "delegate", "role": role,
+                    "task": "Explain the author's conditional argument.",
+                    "input_artifact_refs": [read_ref],
+                }
         elif index == 4:
+            child_input = json.loads(json.loads(request.content)["messages"][-1]["content"])
+            assert child_input["role"] == role
+            assert child_input["delegation_policy"]["preferred_tool"] == "agent.spawn"
+            assert child_input["task_budget"]["budget"]["allocated"] == (4 if role == "analyst" else 1)
+            assert child_input["task"]
+            if role_version == "2.0.0":
+                assert child_input["task"]["reading_request"]["depth"] == "deep"
+            assert child_input["success_criteria"]
+            assert "evidence_links" in child_input["output_json_schema"]["required"]
             result = {
-                "schema_version": "finance.research_result.v1",
+                "schema_version": (
+                    "finance.analyst_result.v2"
+                    if role == "analyst" and role_version == "2.0.0"
+                    else "finance.research_result.v1"
+                ),
                 "content": "The author offers a conditional view.",
                 "evidence_links": [{"text": "The author offers a conditional view.", "evidence_refs": [read_ref]}],
                 "material_disposition": [{
@@ -273,6 +384,13 @@ def test_analyst_delegate_receives_authorized_material_and_returns_research_resu
                 "gaps": [],
                 "limitations": [],
             }
+            if role == "analyst" and role_version == "2.0.0":
+                result.update({
+                    "review_targets": [],
+                    "review_decision": "skip",
+                    "review_decision_reason": "The assigned source contains one directly attributable view.",
+                    "review_dispositions": [],
+                })
             payload = {"type": "final", "output": result}
         else:
             analyst_refs = [
@@ -291,7 +409,7 @@ def test_analyst_delegate_receives_authorized_material_and_returns_research_resu
         return httpx.Response(200, json=_chat(payload, index))
 
     config = SchedulerConfig(
-        stream_name="finance-agent-next:fixture:analyst-delegate",
+        stream_name="finance-agent-next:fixture:analyst-delegate", budget_policy="hierarchical",
         publish_attempts=2,
         lease_ms=60000,
     )
@@ -342,10 +460,15 @@ def test_analyst_delegate_receives_authorized_material_and_returns_research_resu
     assert len(calls) == 5
     with repository.db.connection() as connection:
         child = connection.execute(
-            "SELECT t.status, h.role FROM h2_tasks t JOIN h2_threads h ON h.thread_id=t.thread_id "
-            "WHERE t.run_id=? AND h.role='analyst'",
-            (handle.run_id,),
+            "SELECT t.status, h.role, b.requested_calls, b.allocated_calls, "
+            "b.deadline_at-b.created_at AS wall_time_ms "
+            "FROM h2_tasks t JOIN h2_threads h ON h.thread_id=t.thread_id "
+            "JOIN h2_budgets b ON b.budget_id=t.budget_ref "
+            "WHERE t.run_id=? AND h.role=?",
+            (handle.run_id, role),
         ).fetchone()
-    assert child["role"] == "analyst"
+    assert child["role"] == role
     assert child["status"] == "succeeded"
+    assert child["requested_calls"] == child["allocated_calls"] == (4 if role == "analyst" else 1)
+    assert child["wall_time_ms"] == (600000 if role == "analyst" else 120000)
 

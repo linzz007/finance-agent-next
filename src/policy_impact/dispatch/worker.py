@@ -20,6 +20,11 @@ class Suspend:
 
 
 @dataclass(frozen=True)
+class Continue:
+    checkpoint: CheckpointState
+
+
+@dataclass(frozen=True)
 class WorkInput:
     run_id: str
     task_id: str
@@ -40,7 +45,7 @@ class Worker:
         repository,
         transport,
         worker_id: str,
-        handler: Callable[[WorkInput], Awaitable[Submission | Suspend]] | None = None,
+        handler: Callable[[WorkInput], Awaitable[Submission | Suspend | Continue]] | None = None,
         *,
         executor=None,
         model_adapter=None,
@@ -93,6 +98,10 @@ class Worker:
             "quota_error",
             "timeout",
             "outcome_unknown",
+            "checkpoint_invalid",
+            "artifact_unavailable",
+            "budget_denied",
+            "forbidden",
         }
         try:
             await asyncio.to_thread(
@@ -100,6 +109,7 @@ class Worker:
                 lease,
                 code if code in allowed else "internal_error",
                 retryable=isinstance(exc, DispatchError) and exc.retryable,
+                details=exc.details if isinstance(exc, DispatchError) and code in allowed else None,
             )
         except DispatchError as lost:
             if lost.code not in {"stale_lease", "cancelled"}:
@@ -154,9 +164,12 @@ class Worker:
     async def process(self, entry_id, raw):
         try:
             payload = validate_message(raw)
+            lease, ack_safe = await asyncio.to_thread(self.repository.claim, payload, self.worker_id)
         except DispatchError as exc:
-            # A malformed wire entry must not stop the worker or remain an
-            # invisible PEL item. Persist the quarantine record before ACK.
+            if exc.code != "contract_error":
+                raise
+            # Wire and persisted-Outbox mismatches share the durable rejection
+            # boundary. Infrastructure failures must still leave the entry pending.
             await asyncio.to_thread(
                 self.repository.records.quarantine,
                 entry_id=str(entry_id),
@@ -166,7 +179,6 @@ class Worker:
             )
             await asyncio.to_thread(self.transport.ack, entry_id)
             return False
-        lease, ack_safe = await asyncio.to_thread(self.repository.claim, payload, self.worker_id)
         if lease is None:
             if ack_safe:
                 await asyncio.to_thread(self.transport.ack, entry_id)
@@ -177,9 +189,7 @@ class Worker:
                 self.repository.execution_input, lease, context_accepts=self.context_accepts
             )
         except DispatchError as exc:
-            if exc.code in {"artifact_unavailable", "checkpoint_invalid"}:
-                await self._fail_execution(lease, DispatchError("contract_error"))
-            elif exc.code == "cancelled":
+            if exc.code in {"artifact_unavailable", "checkpoint_invalid", "cancelled"}:
                 await self._fail_execution(lease, exc)
             elif exc.code not in {"stale_lease", "cancelled"}:
                 raise
@@ -214,6 +224,10 @@ class Worker:
                 if isinstance(outcome, Suspend):
                     await asyncio.to_thread(
                         self.repository.suspend, lease, outcome.checkpoint, outcome.wait
+                    )
+                elif isinstance(outcome, Continue):
+                    await asyncio.to_thread(
+                        self.repository.continue_task, lease, outcome.checkpoint
                     )
                 elif isinstance(outcome, Submission):
                     await self._save_submission(lease, work, outcome)

@@ -1,0 +1,53 @@
+{
+  "versions": [
+    "1.0.0"
+  ],
+  "description": "Complete a dynamically assigned task such as blind review, comparison, explanation or research; the parent supplies its role, method and deliverable in task_instructions.",
+  "instructions": "general",
+  "input_requirements": [
+    "A clear task message; task_instructions and success_criteria may be supplied when useful.",
+    "Explicit material/background handles when the task needs sources; no inherited full parent transcript."
+  ],
+  "output_contract": "finance.task_result.v1",
+  "allowed_tools": [
+    "article.list",
+    "article.search",
+    "article.read",
+    "article.claims",
+    "tool.describe",
+    "material.get",
+    "web.search",
+    "web.open",
+    "market.catalog",
+    "market.snapshot",
+    "market.metrics",
+    "market.series",
+    "personal.catalog",
+    "context.open",
+    "company_wiki_search",
+    "agent.spawn",
+    "agent.wait",
+    "agent.status",
+    "agent.send",
+    "agent.cancel",
+    "agent.resume",
+    "result.get"
+  ],
+  "allowed_child_profiles": [
+    "general",
+    "analyst",
+    "verifier",
+    "skeptic"
+  ],
+  "input_contracts": [
+    "finance.research_task@1"
+  ],
+  "output_contracts": [
+    "finance.task_result@1"
+  ],
+  "context_policy": {
+    "history": "task_local",
+    "materials": "explicit_refs",
+    "parent_context": "explicit_only"
+  }
+}

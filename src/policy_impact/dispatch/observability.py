@@ -17,16 +17,21 @@ _SECRET_KEY = re.compile(
     r"(?:api[_-]?key|authorization|password|secret|token)", re.IGNORECASE
 )
 _SECRET_VALUE = re.compile(r"(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+\S+)", re.IGNORECASE)
+_USAGE_COUNT_KEYS = frozenset({
+    "input_tokens", "output_tokens", "prompt_tokens", "completion_tokens", "total_tokens",
+})
 
 
 def redact(value: Any) -> Any:
     """Return JSON-safe diagnostics without credentials or unbounded strings."""
 
     if isinstance(value, dict):
-        return {
-            str(key): "[redacted]" if _SECRET_KEY.search(str(key)) else redact(item)
-            for key, item in value.items()
-        }
+        cleaned = {}
+        for key, item in value.items():
+            name = str(key)
+            is_usage_count = name in _USAGE_COUNT_KEYS and type(item) is int and item >= 0
+            cleaned[name] = "[redacted]" if _SECRET_KEY.search(name) and not is_usage_count else redact(item)
+        return cleaned
     if isinstance(value, list):
         return [redact(item) for item in value]
     if isinstance(value, tuple):
@@ -46,19 +51,28 @@ class RuntimeRecords:
     def __init__(self, root: Path):
         self.root = Path(root).absolute()
 
+    def _is_local_path(self, path: Path) -> bool:
+        """Reject linked components, including directory junctions, not just leaf links."""
+        try:
+            return path.is_relative_to(self.root) and path.resolve() == path
+        except (OSError, RuntimeError):
+            return False
+
     def _run_dir(self, run_id: str) -> Path:
         if not SAFE_ID.fullmatch(run_id):
             raise ValueError("invalid run_id")
         path = self.root / "runs" / run_id
-        if path.resolve() != path or not path.is_relative_to(self.root):
+        if not self._is_local_path(path):
             raise ValueError("runtime record path escaped root")
         return path
 
     def _write_bytes(self, path: Path, data: bytes) -> Path:
         path = path.absolute()
-        if path.resolve() != path or not path.is_relative_to(self.root):
+        if not self._is_local_path(path):
             raise ValueError("runtime record path escaped root")
         path.parent.mkdir(parents=True, exist_ok=True)
+        if not self._is_local_path(path):
+            raise ValueError("runtime record path escaped root")
         fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".pending-")
         try:
             with os.fdopen(fd, "wb") as handle:
@@ -85,6 +99,8 @@ class RuntimeRecords:
 
     def quarantine(self, *, entry_id: str, raw: Any, error_code: str, error_message: str = "") -> Path:
         path = self.root / "errors" / "malformed-messages.jsonl"
+        if not self._is_local_path(path):
+            raise ValueError("runtime record path escaped root")
         record = {
             "entry_id": str(entry_id),
             "error_code": error_code,
@@ -93,8 +109,11 @@ class RuntimeRecords:
             "recorded_at": now_ms(),
         }
         path.parent.mkdir(parents=True, exist_ok=True)
-        path = path.absolute()
+        if not self._is_local_path(path):
+            raise ValueError("runtime record path escaped root")
         with path.open("ab") as handle:
+            if os.fstat(handle.fileno()).st_nlink != 1:
+                raise ValueError("linked quarantine file is not allowed")
             handle.write(_json_line(record))
             handle.flush()
             os.fsync(handle.fileno())
@@ -107,23 +126,29 @@ class RuntimeRecords:
             raise ValueError("min_age_ms must not be negative")
         now = now_ms() if now is None else now
         artifact_root = self.root / "runs"
-        if not artifact_root.exists():
+        if not self._is_local_path(artifact_root) or not artifact_root.is_dir():
             return []
         candidates = []
-        for path in artifact_root.glob("*/artifacts/*"):
-            if not path.is_file() or path.is_symlink():
+        for run_dir in artifact_root.iterdir():
+            if not self._is_local_path(run_dir) or not run_dir.is_dir():
                 continue
-            uri = str(path.relative_to(self.root)).replace("\\", "/")
-            age = max(0, now - int(path.stat().st_mtime * 1000))
-            if uri not in known_uris and age >= min_age_ms:
-                candidates.append(path)
+            folder = run_dir / "artifacts"
+            if not self._is_local_path(folder) or not folder.is_dir():
+                continue
+            for path in folder.iterdir():
+                if not self._is_local_path(path) or not path.is_file():
+                    continue
+                uri = str(path.relative_to(self.root)).replace("\\", "/")
+                age = max(0, now - int(path.stat().st_mtime * 1000))
+                if uri not in known_uris and age >= min_age_ms:
+                    candidates.append(path)
         return sorted(candidates)
 
     def remove_orphans(self, paths: Iterable[Path]) -> list[str]:
         removed: list[str] = []
         for candidate in paths:
             path = Path(candidate).absolute()
-            if path.is_symlink() or not path.is_file() or not path.is_relative_to(self.root):
+            if not self._is_local_path(path) or not path.is_file():
                 continue
             path.unlink()
             removed.append(str(path.relative_to(self.root)).replace("\\", "/"))

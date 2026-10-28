@@ -55,13 +55,17 @@ class FinanceRootState(Command):
 class FinanceStep(Command):
     """One domain decision made during one root Attempt."""
 
-    status: Literal["waiting", "succeeded", "partial", "failed"]
+    status: Literal["continuing", "waiting", "succeeded", "partial", "failed"]
     state: FinanceRootState
     wait: Wait | None = None
     submission: Submission | None = None
 
     @model_validator(mode="after")
     def validate_transition(self):
+        if self.status == "continuing":
+            if self.wait is not None or self.submission is not None:
+                raise ValueError("continuing requires no wait or submission")
+            return self
         if self.status == "waiting":
             if self.wait is None or self.submission is not None:
                 raise ValueError("waiting requires wait and no submission")
@@ -98,11 +102,18 @@ class FinanceRootExecutor:
     supplied by that Worker.
     """
 
-    def __init__(self, step: FinanceStepFunction):
+    def __init__(self, step: FinanceStepFunction, *, research: bool = False):
         self._step = step
+        self._research = research
 
     async def __call__(self, work, capabilities):
-        if work.brief.get("depth") != 0 or work.brief.get("role") != "main":
+        from .finance_rules import rules_for
+
+        is_research = (
+            self._research and work.brief.get("depth") in {1, 2}
+            and work.brief.get("role") in rules_for(capabilities).manifest["roles"]
+        )
+        if not is_research and (work.brief.get("depth") != 0 or work.brief.get("role") != "main"):
             raise DispatchError("contract_error", "finance root executor requires root task")
 
         state = await self._load_state(work, capabilities)
@@ -126,6 +137,9 @@ class FinanceRootExecutor:
             raise DispatchError("contract_error", "finance state revision did not advance")
 
         state_ref = await capabilities.store_context(self._compact_state(result.state))
+        if result.status == "continuing":
+            checkpoint = self._checkpoint(work, result.state, state_ref)
+            return await capabilities.continue_task(checkpoint)
         if result.status == "waiting":
             checkpoint = self._checkpoint(work, result.state, state_ref)
             return await capabilities.wait(result.wait.model_dump(), checkpoint)
@@ -186,6 +200,44 @@ class FinanceRootExecutor:
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 raise DispatchError("checkpoint_invalid", "invalid finance root state") from exc
 
+        follow_up_query = next(
+            (
+                message["content"]
+                for message in reversed(work.messages)
+                if message.get("kind") == "follow_up"
+                and isinstance(message.get("content"), str)
+            ),
+            None,
+        )
+        execution = {}
+        is_follow_up = work.brief.get("previous_task_id") is not None
+        if is_follow_up:
+            if not follow_up_query:
+                raise DispatchError("contract_error", "follow-up task has no research query")
+            execution["follow_up_context"] = {
+                "previous_task_id": work.brief["previous_task_id"],
+                "previous_result_ref": work.brief.get("previous_result_ref"),
+                "success_criteria": list(work.brief.get("success_criteria") or []),
+            }
+
+        if self._research:
+            refs = list(work.brief.get("input_refs") or [])
+            assignment = None
+            if refs:
+                try:
+                    first = json.loads(await capabilities.load_context(refs[0]))
+                except json.JSONDecodeError:
+                    first = None
+                if isinstance(first, dict) and first.get("schema_version") == "finance.h2.child_request.v1":
+                    assignment = first.get("action") if not is_follow_up else None
+                    # Only the accepted TaskBrief defines input grants, not the envelope.
+                    refs = refs[1:]
+            return FinanceRootState(
+                query=follow_up_query if is_follow_up else work.brief["objective"], phase="research",
+                execution={"material_refs": refs, "evidence_refs": refs,
+                           "research_assignment": assignment, **execution},
+            )
+
         query = next(
             (
                 message.get("content")
@@ -198,18 +250,10 @@ class FinanceRootExecutor:
             # A terminal Thread follow-up intentionally starts a new Task and
             # therefore has only a follow_up mailbox message. It is a new
             # research request, not a replay of the previous Task's state.
-            query = next(
-                (
-                    message.get("content")
-                    for message in reversed(work.messages)
-                    if message.get("kind") == "follow_up"
-                    and isinstance(message.get("content"), str)
-                ),
-                None,
-            )
+            query = follow_up_query
         if not query:
             raise DispatchError("contract_error", "root mailbox has no research query")
-        return FinanceRootState(query=query, phase="plan")
+        return FinanceRootState(query=query, phase="plan", execution=execution)
 
     @staticmethod
     def _checkpoint(work, state: FinanceRootState, state_ref: str) -> CheckpointState:

@@ -1,0 +1,1 @@
+Public-source tools are optional: web.search returns navigation leads, not read page evidence; use web.open for actual page text and follow its pagination when needed. A fetched page is source material, not automatically verified truth. Keep retrieval time separate from publication time; missing dates stay unknown. public_sources records provenance, not new grants.

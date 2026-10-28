@@ -1,0 +1,1 @@
+final_output_json_schema describes only final.output, not the whole response. Correct structure, required fields and verbatim evidence anchors only. Use existing public analysis for anchors or omit invalid bindings; do not add research, change conclusions, invent source support or execute provider-specific tool markup.

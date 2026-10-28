@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
@@ -45,18 +49,48 @@ def _research_route(route: APIRoute) -> bool:
     return "/finance/reports" not in path
 
 
-def create_app(*, harness_v2_service=None) -> FastAPI:
-    app = FastAPI(title="finance-agent-next", version="0.1.0")
+def create_app(*, harness_v2_service=None, h2_workbench=None, default_h2=False) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app):
+        if default_h2:
+            wb = h2_workbench
+            if wb is None:
+                from policy_impact.app.h2_workbench import build_h2_workbench
+                from policy_impact.domains.finance.article_corpus import article_root
+
+                wb = await asyncio.to_thread(
+                    build_h2_workbench,
+                    article_root(),
+                    project_root=Path(__file__).resolve().parents[3],
+                )
+            app.state.h2_workbench = wb
+            await wb.start()
+        try:
+            yield
+        finally:
+            if default_h2:
+                await app.state.h2_workbench.stop()
+
+    app = FastAPI(
+        title="finance-agent-next", version="2.0.0" if default_h2 else "0.1.0", lifespan=lifespan
+    )
     selected = APIRouter()
     for route in shared.app.routes:
         if isinstance(route, APIRoute) and _research_route(route):
+            if default_h2 and (route.path in {"/", "/workbench"} or "/sessions" in route.path):
+                continue
             selected.routes.append(route)
     app.include_router(selected, dependencies=[Depends(require_finance_scope)])
     app.mount("/static", StaticFiles(directory=str(shared.STATIC_DIR)), name="static")
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok", "product": "finance-agent-next", "workspace": WORKSPACE_ID}
+        return {
+            "status": "ok",
+            "product": "finance-agent-next",
+            "workspace": WORKSPACE_ID,
+            "runtime": "harness-v2" if default_h2 else "legacy-v1",
+        }
 
     @app.get("/companies")
     def companies() -> dict:
@@ -70,16 +104,27 @@ def create_app(*, harness_v2_service=None) -> FastAPI:
         }
         return {"companies": [summary], "company_ids": [WORKSPACE_ID]}
 
-    @app.get("/companies/{company_id}/workbench/skills", dependencies=[Depends(require_finance_scope)])
+    @app.get(
+        "/companies/{company_id}/workbench/skills", dependencies=[Depends(require_finance_scope)]
+    )
     def skills(company_id: str) -> dict:
-        return {"skills": [s for s in shared.workbench_service.list_skills() if s["id"] == "general_chat"]}
+        return {
+            "skills": [
+                s for s in shared.workbench_service.list_skills() if s["id"] == "general_chat"
+            ]
+        }
 
     if harness_v2_service is not None:
         from policy_impact.dispatch.http_api import register_harness_v2_routes
 
         register_harness_v2_routes(app, harness_v2_service)
 
+    if default_h2:
+        from policy_impact.app.h2_workbench_api import register_h2_workbench
+
+        register_h2_workbench(app, shared.STATIC_DIR)
+
     return app
 
 
-app = create_app()
+app = create_app(default_h2=True)

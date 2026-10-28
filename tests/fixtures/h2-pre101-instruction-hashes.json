@@ -1,0 +1,10 @@
+{
+  "root.fixed": "6958a2e193779c84a8d0d6fdf3b68d042e1a3e1c3fc304a6dca2fd373518a7a2",
+  "analyst.fixed": "d45ecf05dcd8425efc66e6a6e9c0fa90b9bb1f33047857509a9f525ff543d59d",
+  "verifier.fixed": "1e1ce5fe4f0d3eed01dea50f5c2a56612298f6d00e912e3f98001ebb72a01774",
+  "skeptic.fixed": "27c24416391a94589e116df1137ef335a380650d32794b154c301eeb669452ca",
+  "root.requested": "be9d4834178cf8f2df69783e1b0879296eb494a7a38abc801a06e0fc694aa9d1",
+  "analyst.requested": "c7c09db9b48b746aebfe2d75c322aa5d6cd0f825551a97bef7c9db5ff29165d5",
+  "verifier.requested": "596654dbf8466bcbf6203c721b0f1d0118a2121ba822d272fae6d88646d8f190",
+  "skeptic.requested": "81d66f4eddb0c24cc82eeaed9c85435a4262c348cf75b0d94280454233dcce52"
+}

@@ -32,6 +32,11 @@ not prove a production Redis deployment or long-running multi-worker safety.
 Batch: `data/acceptance/h2-code-fix-r1-20261019`  
 Model: DeepSeek `deepseek-flash`; no automatic model fallback.
 
+Entry-point clarification from the subsequent
+[R3 audit](harness-v2-fault-acceptance-r3-20261019.md): this batch ran through the
+legacy `ChatWorkbenchService`. The batch name does not make it live H2
+Root/Redis/state-update acceptance. The original results below are unchanged.
+
 | Query | Runtime | Delivery | Model failures | Tool failures |
 | --- | ---: | --- | ---: | ---: |
 | Q04 | 537.67 s | returned | 0 | 5 |

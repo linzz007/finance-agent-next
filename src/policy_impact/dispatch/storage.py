@@ -17,6 +17,7 @@ from uuid import uuid4
 from .contracts import DispatchError
 
 VERSION = "H2-CONTRACTS-2026-10-18-v1"
+INDEPENDENT_BUDGET_VERSION = "H2-INDEPENDENT-BUDGETS-2026-10-20-v1"
 SAFE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 
 
@@ -71,6 +72,8 @@ class Database:
             raise ValueError("linked database path is not allowed")
         script = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         checksum = hashlib.sha256(script.encode()).hexdigest()
+        extension = Path(__file__).with_name("schema-independent-budgets.sql").read_text(encoding="utf-8")
+        extension_checksum = hashlib.sha256(extension.encode()).hexdigest()
         c = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         try:
             c.execute("PRAGMA journal_mode=WAL")
@@ -81,9 +84,11 @@ class Database:
                 "CREATE TABLE IF NOT EXISTS h2_schema_migrations "
                 "(version TEXT PRIMARY KEY, checksum TEXT NOT NULL)"
             )
-            rows = c.execute("SELECT version,checksum FROM h2_schema_migrations").fetchall()
+            rows = dict(c.execute("SELECT version,checksum FROM h2_schema_migrations").fetchall())
             if rows:
-                if rows != [(VERSION, checksum)]:
+                if (rows.get(VERSION) != checksum or set(rows) - {VERSION, INDEPENDENT_BUDGET_VERSION}
+                        or (INDEPENDENT_BUDGET_VERSION in rows
+                            and rows[INDEPENDENT_BUDGET_VERSION] != extension_checksum)):
                     raise DispatchError("schema_version_mismatch")
             else:
                 statement = ""
@@ -95,6 +100,17 @@ class Database:
                 if statement.strip():
                     raise ValueError("incomplete DDL")
                 c.execute("INSERT INTO h2_schema_migrations VALUES (?,?)", (VERSION, checksum))
+            if INDEPENDENT_BUDGET_VERSION not in rows:
+                statement = ""
+                for line in extension.splitlines(keepends=True):
+                    statement += line
+                    if sqlite3.complete_statement(statement):
+                        c.execute(statement)
+                        statement = ""
+                if statement.strip():
+                    raise ValueError("incomplete DDL")
+                c.execute("INSERT INTO h2_schema_migrations VALUES (?,?)",
+                          (INDEPENDENT_BUDGET_VERSION, extension_checksum))
             if c.execute("PRAGMA foreign_key_check").fetchall():
                 raise DispatchError("schema_foreign_key_error")
             c.commit()

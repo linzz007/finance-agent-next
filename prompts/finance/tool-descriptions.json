@@ -1,0 +1,28 @@
+{
+  "DESCRIPTIONS": {
+    "article.list": "List article metadata and author counts/latest dates; authors_scope identifies the statistics scope, not a source read.",
+    "article.search": "Find article leads and excerpts by query; not a full source read.",
+    "article.read": "Read one observed article ID with bounded start_line/limit; follow has_more.",
+    "article.claims": "Read cached source-anchored claims; an empty cache is not an empty article.",
+    "tool.describe": "Look up an allowed tool's parameters, or agent_action.v1 for action Schemas.",
+    "material.get": "Expand an authorized material artifact by character pages; follow has_more.",
+    "web.search": "Find public-source navigation leads; snippets are not read page evidence.",
+    "web.open": "Read a safe public HTML/text page; retain URL, dates, hash and pagination, not verified truth.",
+    "market.catalog": "List configured market symbols, units and market conventions; not price evidence.",
+    "market.snapshot": "Acquire daily data into a frozen authorized snapshot_id; not a realtime quote.",
+    "market.metrics": "Compute legacy deterministic metrics from an authorized frozen snapshot_id; no refetch.",
+    "market.series": "Read bounded daily bars from an authorized frozen snapshot_id; follow next_offset.",
+    "personal.catalog": "List frozen private Wiki/preferences/holdings handles; catalog discovery is not a source read.",
+    "context.open": "Read exact pages of an authorized personal context_id; retain source version and follow next_offset.",
+    "company_wiki_search": "Search authorized frozen Wiki facts; matching excerpts are not full-page reads or market facts."
+  },
+  "SCHEDULER_DESCRIPTIONS": {
+    "agent.spawn": "Dispatch new research under the Run's budget policy; return its handle without waiting.",
+    "agent.wait": "Explicitly wait for selected child tasks, releasing this execution slot.",
+    "agent.status": "Inspect authorized child task/thread status and paginated events.",
+    "agent.send": "Send follow-up input to an authorized descendant thread.",
+    "agent.cancel": "Request cancellation of an authorized descendant task.",
+    "agent.resume": "Resume an authorized failed descendant without changing its model.",
+    "result.get": "Read an authorized result summary, full page or named section; follow has_more."
+  }
+}

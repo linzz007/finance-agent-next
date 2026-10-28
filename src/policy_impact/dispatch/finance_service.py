@@ -18,7 +18,7 @@ from typing import Any
 from .contracts import CallerContext, DispatchError, Submission
 from .finance_root import FinanceRootExecutor, FinanceStepFunction
 from .transport import Dispatcher, RedisStreams
-from .worker import Worker
+from .worker import Continue, Suspend, Worker
 
 ChildExecutor = Callable[[Any, Any], Awaitable[Submission] | Submission]
 
@@ -47,6 +47,7 @@ class FinanceHarnessV2Service:
         child_executor: ChildExecutor,
         model_adapter=None,
         worker_id: str = "finance-h2",
+        rule_loader=None,
     ) -> None:
         if not callable(finance_step) or not callable(child_executor):
             raise TypeError("finance_step and child_executor are required callables")
@@ -58,12 +59,14 @@ class FinanceHarnessV2Service:
         self.child_executor = child_executor
         self.model_adapter = model_adapter
         self.worker_id = worker_id
+        self.rule_loader = rule_loader
         self.worker = Worker(
             repository,
             transport,
             worker_id,
             executor=self._execute,
             model_adapter=model_adapter,
+            context_accepts=self._context_accepts,
         )
 
     @classmethod
@@ -73,29 +76,42 @@ class FinanceHarnessV2Service:
         transport: RedisStreams,
         *,
         corpus,
+        public_sources=None,
+        market_sources=None,
+        personal_sources=None,
         model_adapter=None,
         worker_id: str = "finance-h2",
     ):
         """Build the explicit model-driven finance path for one article corpus."""
-        from .finance_agent import FinanceH2ChildExecutor, FinanceH2Domain
+        from .finance_agent import ROOT_TOOLS, FinanceH2ChildExecutor, FinanceH2Domain
+        from .finance_rules import ROLE_VERSIONS, load_rules
+        from .finance_tool_contracts import MARKET_TOOLS, PERSONAL_TOOLS, PUBLIC_TOOLS
 
         # These roles are executable by this trusted domain adapter. They are
         # still recorded in the permission snapshot and cannot be invented by
         # a model at runtime.
         repository.roles.setdefault("finance_tool@1.0.0", [])
-        repository.roles.setdefault("analyst@2.0.0", [])
-        repository.roles.setdefault("verifier@1.0.0", [])
-        repository.roles.setdefault("skeptic@1.0.0", [])
-        domain = FinanceH2Domain(corpus)
-        child = FinanceH2ChildExecutor(corpus)
-        return cls(
+        tools = [*ROOT_TOOLS, *(sorted(PUBLIC_TOOLS) if public_sources is not None else []),
+                 *(sorted(MARKET_TOOLS) if market_sources is not None else []),
+                 *(sorted(PERSONAL_TOOLS) if personal_sources is not None else [])]
+        for role, versions in ROLE_VERSIONS.items():
+            for version in versions:
+                repository.roles.setdefault(f"{role}@{version}", tools.copy())
+        domain = FinanceH2Domain(corpus, public_sources=public_sources, market_sources=market_sources,
+                                 personal_sources=personal_sources)
+        child = FinanceH2ChildExecutor(corpus, public_sources=public_sources, market_sources=market_sources,
+                                      personal_sources=personal_sources)
+        service = cls(
             repository,
             transport,
             finance_step=domain,
             child_executor=child,
             model_adapter=model_adapter,
             worker_id=worker_id,
+            rule_loader=load_rules,
         )
+        service.profile_tools = tools
+        return service
 
     def create_run(
         self,
@@ -106,8 +122,14 @@ class FinanceHarnessV2Service:
         selected_profile: str,
         allowed_profiles: list[str],
         tools: list[str],
+        research_clock: dict | None = None,
     ) -> FinanceRunHandle:
         """Create a run with an explicit model/profile and permission snapshot."""
+        with self.repository.db.connection() as connection:
+            exists = connection.execute("SELECT 1 FROM h2_runs WHERE run_id=?", (run_id,)).fetchone()
+        rules = self.rule_loader().snapshot() if self.rule_loader is not None and not exists else None
+        if rules is not None:
+            self._register_profiles(rules)
         receipt = self.repository.create_run(
             run_id=run_id,
             session_ref=session_ref,
@@ -115,6 +137,8 @@ class FinanceHarnessV2Service:
             selected_profile=selected_profile,
             allowed_profiles=allowed_profiles,
             tools=tools,
+            **({"research_clock": research_clock} if research_clock is not None else {}),
+            **({"instruction_rules": rules} if rules is not None else {}),
         )
         data = receipt["data"]
         return FinanceRunHandle(
@@ -201,7 +225,22 @@ class FinanceHarnessV2Service:
                 return status
         raise TimeoutError("H2 finance run did not reach a terminal state within max_cycles")
 
+    def _context_accepts(self, data):
+        from policy_impact.harness.context_manifest import estimate_tokens
+
+        from .model_execution import GatewayModelAdapter
+
+        adapter = self.model_adapter if self.model_adapter is not None else GatewayModelAdapter
+        try:
+            limit = adapter.settings(data["model"]).input_limit()
+        except (DispatchError, KeyError, TypeError):
+            return False
+        # The full frozen asset bundle is internal; only selected instructions enter model input.
+        brief = {key: value for key, value in data.get("brief", {}).items() if key != "instruction_rules"}
+        return estimate_tokens({**data, "brief": brief}) <= limit
+
     async def _execute(self, work, capabilities):
+        self._register_profiles(getattr(capabilities, "instruction_rules", None))
         depth = work.brief.get("depth")
         if depth == 0:
             return await self.root_executor(work, capabilities)
@@ -210,9 +249,18 @@ class FinanceHarnessV2Service:
         result = self.child_executor(work, capabilities)
         if inspect.isawaitable(result):
             result = await result
-        if not isinstance(result, Submission):
+        if not isinstance(result, (Submission, Continue, Suspend)):
             raise DispatchError("contract_error", "finance child executor returned an invalid result")
         return result
+
+    def _register_profiles(self, snapshot):
+        if snapshot is None or not hasattr(self, "profile_tools"):
+            return
+        from .finance_rules import FinanceRules
+
+        for role, profile in FinanceRules.from_snapshot(snapshot).manifest["roles"].items():
+            for version in profile["versions"]:
+                self.repository.roles.setdefault(f"{role}@{version}", self.profile_tools.copy())
 
     def _validate_evidence_refs(self, run_id: str, refs: list[dict]) -> bool:
         """Accept only artifact references already registered in this run."""
@@ -233,7 +281,12 @@ class FinanceHarnessV2Service:
                 ),
                 (run_id, *values),
             ).fetchall()
-        return len(rows) == len(set(values))
+            results = connection.execute(
+                "SELECT result_ref FROM h2_results WHERE run_id=? AND disposition='accepted' "
+                "AND result_ref IN ({})".format(",".join("?" for _ in values)),
+                (run_id, *values),
+            ).fetchall()
+        return {row[0] for row in [*rows, *results]} == set(values)
 
 
 __all__ = ["FinanceHarnessV2Service", "FinanceRunHandle"]

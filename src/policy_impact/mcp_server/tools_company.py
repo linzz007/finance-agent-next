@@ -72,10 +72,15 @@ def company_wiki_search(company_id: str, query: str, top_k: int = 5) -> list[dic
     """
 
     knowledge = load_company_knowledge(company_id)
+    return rank_wiki_facts(knowledge["facts"], query, top_k)
+
+
+def rank_wiki_facts(facts: list[dict], query: str, top_k: int = 5) -> list[dict]:
+    """Rank an already-loaded authorized corpus; do not read global workspaces."""
     normalized_query = str(query or "").lower()
     terms = [term for term in tokenize(_expanded_query(query)) if term]
     scored = []
-    for fact in knowledge["facts"]:
+    for fact in facts:
         source_kind = classify_source_kind(str(fact.get("source") or ""))
         text = " ".join(
             [
