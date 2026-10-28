@@ -6,6 +6,17 @@ The internal Python namespace `policy_impact` is retained for compatibility.
 
 ## Read First
 
+110 redesigns the H2 Workbench with the approved warm editorial research UI.
+Research, test archives, reports, source artifacts and execution traces share
+the existing API; no model/budget/queue/database behavior is changed. Keep real
+failed/partial source and child receipts visible. Responsive navigation and
+inspector drawers, report export and source reading are implemented. Validation:
+9 frontend + 8 Python tests pass; one real DeepSeek browser Run succeeded with
+6 requests / 1 Task / 4 Attempts / 78 events, including a failed article limit
+validation followed by a successful read. Refresh did not add calls. Desktop
+1440 and mobile 390/360 widths were checked. See docs/changes/110 and local
+../runtime-records/h2-editorial-workbench-20261028 for screenshots and evidence.
+
 109 adds a read-only Test Records tab to the H2 Workbench. It reads original
 per-case SQLite and exported scheduling traces under sibling runtime-records
 (FINANCE_H2_ARCHIVES override), without importing Runs or invoking models.

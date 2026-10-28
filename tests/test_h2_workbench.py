@@ -126,7 +126,9 @@ def test_web_path_reaches_real_h2_and_preserves_full_answer(web):
     wb, calls = web
     with TestClient(create_app(default_h2=True, h2_workbench=wb)) as client:
         assert client.get("/health").json()["runtime"] == "harness-v2"
-        assert "H2 Runtime" in client.get("/workbench").text
+        page = client.get("/workbench").text
+        assert 'id="inspector"' in page and 'id="tab-sources"' in page
+        assert 'id="query"' in page and 'id="artifact-dialog"' in page
         config = client.get("/api/h2-workbench/config").json()
         assert config["driver_running"] and config["transport_backend"] == "fakeredis-local"
         assert config["budget"] == {"root": 120, "child": 60, "run": 600, "minutes": 60}
