@@ -17,6 +17,7 @@ from policy_impact.dispatch.finance_agent import ROOT_TOOLS
 from policy_impact.dispatch.finance_market_sources import FinanceMarketSources
 from policy_impact.dispatch.finance_personal_sources import FinancePersonalSources
 from policy_impact.dispatch.finance_public_sources import FinancePublicSources
+from policy_impact.dispatch.finance_review_status import collect_review_statuses
 from policy_impact.dispatch.finance_tool_contracts import MARKET_TOOLS, PERSONAL_TOOLS, PUBLIC_TOOLS
 from policy_impact.dispatch.model_execution import GatewayModelAdapter, profiles_from_registry
 from policy_impact.dispatch.transport import RedisStreams
@@ -94,9 +95,22 @@ class H2Workbench:
                 ORDER BY w.created_at,w.rowid""",
                 (session_id,),
             ).fetchall()
-        return [{**dict(row), "metadata": json.loads(row["metadata_json"] or "{}")} for row in rows]
+        return [{**dict(row), "metadata": {**json.loads(row["metadata_json"] or "{}"),
+                                          "review_statuses": self.review_statuses(row["run_id"])}}
+                for row in rows]
 
-    def submit(self, session_id, query, profile, request_id):
+    def review_statuses(self, run_id):
+        with self.repository.db.connection() as conn:
+            def read(ref):
+                row = conn.execute(
+                    "SELECT * FROM h2_artifacts WHERE run_id=? AND artifact_ref=?", (run_id, ref),
+                ).fetchone()
+                if row is None:
+                    raise DispatchError("artifact_unavailable")
+                return self.repository.artifacts.read(row).decode("utf-8")
+            return collect_review_statuses(conn, run_id, read)
+
+    def submit(self, session_id, query, profile, request_id, *, dispatch_constraints=None):
         query = query.strip()
         if not query or len(query) > 4096 or profile not in self.repository.profiles:
             raise DispatchError("invalid_arguments")
@@ -112,6 +126,7 @@ class H2Workbench:
             selected_profile=profile,
             allowed_profiles=[profile],
             tools=self.tools,
+            dispatch_constraints=dispatch_constraints,
         )
         with self.repository.db.connection(write=True) as conn:
             conn.execute(
@@ -153,8 +168,12 @@ class H2Workbench:
             caller, [t["task_id"] for t in tasks], status["events"],
         )
         identities = {t["task_id"]: dict(t) for t in tasks}
+        reviews = self.review_statuses(run_id)
+        reviews_by_task = {r["task_id"]: r for r in reviews}
         for task in status["tasks"]:
             task.update(identities[task["task_id"]])
+            if task["task_id"] in reviews_by_task:
+                task["review_status"] = reviews_by_task[task["task_id"]]
         return {
             "run_id": run_id,
             "root_task_id": handle.task_id,
@@ -163,6 +182,7 @@ class H2Workbench:
             "status": status,
             "trace": trace,
             "metrics": self.repository.metrics_snapshot(run_id),
+            "review_statuses": reviews,
             "driver_error": self.last_error,
         }
 

@@ -6,7 +6,11 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from policy_impact.dispatch.contracts import DispatchError
+from policy_impact.dispatch.contracts import DispatchConstraints, DispatchError
+from policy_impact.dispatch.finance_review_status import (
+    artifact_review_presentation,
+    is_accepted_analyst_result,
+)
 from policy_impact.dispatch.http_api import _raise_http
 
 
@@ -19,6 +23,7 @@ class MessageInput(BaseModel):
     query: str = Field(min_length=1, max_length=4096)
     model_profile: str = Field(min_length=1, max_length=160)
     request_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+    dispatch_constraints: DispatchConstraints | None = None
 
 
 def register_h2_workbench(app: FastAPI, static_dir):
@@ -112,7 +117,8 @@ def register_h2_workbench(app: FastAPI, static_dir):
         await local_write(request)
         try:
             return workbench().submit(
-                session_id, payload.query, payload.model_profile, payload.request_id
+                session_id, payload.query, payload.model_profile, payload.request_id,
+                dispatch_constraints=(payload.dispatch_constraints.model_dump() if payload.dispatch_constraints else None),
             )
         except DispatchError as exc:
             _raise_http(exc)
@@ -149,10 +155,13 @@ def register_h2_workbench(app: FastAPI, static_dir):
         try:
             handle = wb.service.handle_for(run_id, session_ref=session_id)
             text = wb.repository.read_input(wb.service.caller(handle), artifact_ref).decode("utf-8")
+            with wb.repository.db.connection() as connection:
+                trusted = is_accepted_analyst_result(connection, run_id, artifact_ref)
             return {
                 "content": text[offset : offset + limit],
                 "has_more": offset + limit < len(text),
                 "next_offset": min(offset + limit, len(text)),
+                **artifact_review_presentation(text, trusted_result=trusted),
             }
         except DispatchError as exc:
             _raise_http(exc)

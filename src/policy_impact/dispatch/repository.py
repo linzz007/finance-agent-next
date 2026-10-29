@@ -24,6 +24,7 @@ from .contracts import (
     CallerContext,
     Cancel,
     CheckpointState,
+    DispatchConstraints,
     DispatchError,
     Lease,
     ModelPolicySet,
@@ -356,7 +357,14 @@ class DispatchRepository:
             return None
         artifact = self._artifact_rows(c, run_id, [root["brief_ref"]])[0]
         policy = json.loads(self.artifacts.read(artifact))["budget_policy"]
-        return {**policy, "root_budget_id": root["budget_id"], "run_calls": root["allocated_calls"]}
+        return {
+            **policy,
+            "minimum_child_ms": policy.get("minimum_child_ms", 0),
+            "required_review_child_ms": policy.get("required_review_child_ms", policy["child_ms"]),
+            "child_window_policy": policy.get("child_window_policy", "legacy_shrink_to_fit"),
+            "root_budget_id": root["budget_id"],
+            "run_calls": root["allocated_calls"],
+        }
 
     @staticmethod
     def _clock_at(created_at):
@@ -404,11 +412,36 @@ class DispatchRepository:
             raise DispatchError("invalid_arguments", "call limits are fixed by Runtime")
         b = c.execute("SELECT * FROM h2_budgets WHERE budget_id=?", (parent["budget_ref"],)).fetchone()
         remaining_ms = b["deadline_at"] - b["final_reserve_ms"] - self.clock()
-        duration = command.wall_time_ms
-        if duration is None:
-            duration = min(policy["child_ms"], remaining_ms)
+        duration_kind = "explicit"
+        if command.wall_time_ms is None:
+            duration_kind = "default"
+            default_ms = policy["child_ms"]
+            if (getattr(command, "role", None) == "analyst"
+                    and getattr(command, "review_mode", None) == "required"):
+                default_ms = policy["required_review_child_ms"]
+                duration_kind = "required_review"
+            if policy["child_window_policy"] == "legacy_shrink_to_fit":
+                duration = min(default_ms, remaining_ms)
+            elif duration_kind == "required_review":
+                duration = default_ms
+            else:
+                duration = min(default_ms, remaining_ms)
+                if duration < policy["minimum_child_ms"]:
+                    raise DispatchError(
+                        "budget_denied",
+                        "remaining time is below the minimum default child window",
+                        details={"scope": "time", "required_ms": policy["minimum_child_ms"],
+                                 "available_ms": max(0, remaining_ms), "window_kind": duration_kind},
+                    )
+        else:
+            duration = command.wall_time_ms
         if duration <= 0 or duration > remaining_ms:
-            raise DispatchError("budget_denied", "requested duration exceeds parent research budget")
+            raise DispatchError(
+                "budget_denied",
+                "child time window does not fit the parent's remaining research time",
+                details={"scope": "time", "required_ms": duration,
+                         "available_ms": max(0, remaining_ms), "window_kind": duration_kind},
+            )
         run = self._run_budget(c, parent["run_id"])
         root = c.execute("SELECT * FROM h2_budgets WHERE budget_id=?",
                          (policy["root_budget_id"],)).fetchone()
@@ -637,6 +670,7 @@ class DispatchRepository:
         tools: list[str],
         research_clock: dict | None = None,
         instruction_rules: dict | None = None,
+        dispatch_constraints: dict | None = None,
     ):
         if not SAFE_ID.fullmatch(run_id) or selected_profile not in allowed_profiles:
             raise DispatchError("invalid_arguments")
@@ -647,6 +681,11 @@ class DispatchRepository:
                 research_clock = ResearchClock.model_validate(research_clock).model_dump()
             except ValidationError as exc:
                 raise DispatchError("invalid_arguments", "invalid research clock") from exc
+        if dispatch_constraints is not None:
+            try:
+                dispatch_constraints = DispatchConstraints.model_validate(dispatch_constraints).model_dump()
+            except ValidationError as exc:
+                raise DispatchError("invalid_arguments", "invalid dispatch constraints") from exc
         payload = {
             "run_id": run_id,
             "session_ref": session_ref,
@@ -657,6 +696,8 @@ class DispatchRepository:
         }
         if research_clock is not None:
             payload["research_clock"] = research_clock
+        if dispatch_constraints is not None:
+            payload["dispatch_constraints"] = dispatch_constraints
         with self.db.connection() as c:
             old = c.execute("SELECT * FROM h2_runs WHERE run_id=?", (run_id,)).fetchone()
             if old:
@@ -670,10 +711,15 @@ class DispatchRepository:
             "objective": query, "input_refs": [query_art.artifact_ref],
             "research_clock": research_clock if research_clock is not None else self._clock_at(now),
         }
+        if dispatch_constraints is not None:
+            brief_payload["dispatch_constraints"] = dispatch_constraints
         if self.config.budget_policy == "fixed":
             brief_payload["budget_policy"] = {
                 "name": "fixed", "root_task_calls": self.config.root_task_calls,
                 "child_task_calls": self.config.child_task_calls, "child_ms": self.config.child_ms,
+                "minimum_child_ms": self.config.minimum_child_ms,
+                "required_review_child_ms": self.config.required_review_child_ms,
+                "child_window_policy": "minimum_floor",
                 "child_reserve_ms": self.config.child_reserve_ms,
             }
         rules_art = None
@@ -824,6 +870,18 @@ class DispatchRepository:
                 if "max_rounds" not in request.review_policy.model_fields_set:
                     payload["review_policy"]["max_rounds"] = 3
             new_review_controls = request.review_mode is not None or request.review_options is not None
+            if (rules is not None and rules.review_verdicts and request.role == "analyst"
+                    and request.role_version == "2.0.0"):
+                explicit_mode = (request.review_policy.mode if request.review_policy is not None
+                                 else request.review_mode)
+                if explicit_mode is None:
+                    raise DispatchError("invalid_arguments", "Analyst review_mode must be explicit", details={
+                        "field": "profile_options.review_mode", "expected": "required, auto or off",
+                    })
+                required_mode = self._run_dispatch_constraints(c, caller.run_id).get("analyst_review_mode")
+                if required_mode is not None and explicit_mode != required_mode:
+                    raise DispatchError("invalid_arguments", "Analyst mode conflicts with immutable Run constraints",
+                                        details={"field": "profile_options.review_mode", "expected": required_mode})
             if new_review_controls and (rules is None or not rules.portable_profiles):
                 raise DispatchError("invalid_arguments", "review_mode requires the new Profile rules")
             if (rules is not None and rules.has_profiles and request.role == "analyst"
@@ -898,7 +956,8 @@ class DispatchRepository:
                 elif request.review_policy is not None or new_review_controls:
                     raise DispatchError("invalid_arguments", "ReviewPolicy is valid only for Analyst v2")
                 if request.review_request is not None:
-                    if request.role != "verifier" or output_key != "finance.review_report@1":
+                    expected_report = "finance.review_report@2" if rules.review_verdicts else "finance.review_report@1"
+                    if request.role != "verifier" or output_key != expected_report:
                         raise DispatchError("invalid_arguments", "ReviewRequest requires the Verifier report contract")
                     if "finance.review_request@1" not in target_profile["input_contracts"]:
                         raise DispatchError("contract_error", "Verifier ReviewRequest contract is not registered")
@@ -933,7 +992,7 @@ class DispatchRepository:
                             or review_request.round_number > review_policy.max_rounds
                             or review_request.round_number > 5):
                         raise DispatchError("depth_exceeded", "review round limit reached")
-                elif request.role == "verifier" and output_key == "finance.review_report@1":
+                elif request.role == "verifier" and output_key in {"finance.review_report@1", "finance.review_report@2"}:
                     raise DispatchError("invalid_arguments", "review report task requires a ReviewRequest")
             current_policy = self._payload(c, run["model_policy_ref"])
             if (
@@ -2136,6 +2195,13 @@ class DispatchRepository:
         except (KeyError, TypeError, ValueError) as exc:
             raise DispatchError("checkpoint_invalid", "invalid Run instruction snapshot") from exc
 
+    def _run_dispatch_constraints(self, c, run_id):
+        row = c.execute("SELECT t.brief_ref FROM h2_runs r JOIN h2_tasks t ON t.task_id=r.root_task_id "
+                        "WHERE r.run_id=?", (run_id,)).fetchone()
+        artifact = self._artifact_rows(c, run_id, [row["brief_ref"]])[0]
+        value = json.loads(self.artifacts.read(artifact)).get("dispatch_constraints")
+        return DispatchConstraints.model_validate(value).model_dump() if value is not None else {}
+
     def execution_input(self, lease: Lease, *, context_accepts=None):
         with self.db.connection() as c:
             task, attempt = self._fence(c, lease.caller())
@@ -2170,6 +2236,7 @@ class DispatchRepository:
                 "deadline_at": task["deadline_at"],
                 "research_clock": self._research_clock(c, lease.run_id),
                 **self._run_instruction_rules(c, lease.run_id),
+                "dispatch_constraints": self._run_dispatch_constraints(c, lease.run_id),
             }
             waits = c.execute(
                 "SELECT * FROM h2_waits WHERE owner_task_id=? AND checkpoint_ref=? "
@@ -2441,6 +2508,10 @@ class DispatchRepository:
                     "consumed": consumed, "remaining": remaining,
                     "local_available": min(remaining, max(0, run["remaining"] - reserve)), "delegated": 0,
                     "run_budget": run, "child_task_calls": policy["child_task_calls"],
+                    "child_window_ms": policy["child_ms"],
+                    "minimum_child_window_ms": policy["minimum_child_ms"],
+                    "required_review_child_window_ms": policy["required_review_child_ms"],
+                    "child_window_policy": policy["child_window_policy"],
                     "exact_cost_limit": False}
         ids = [
             r[0]

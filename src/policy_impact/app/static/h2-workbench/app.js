@@ -161,6 +161,7 @@ function renderMessages(runs) {
     titleRow.append(tools); masthead.append(titleRow);
     const metadata = node("div", "report-meta"); metadata.append(node("span", `badge ${r.status}`, labels[r.status] || r.status), node("span", "", modelName(r.profile)), node("span", "", dateLabel(r.created_at) || (state.archive ? "历史测试报告" : "本轮研究")));
     masthead.append(metadata); answer.append(masthead);
+    answer.append(reviewStatusPanel(r.metadata?.review_statuses || []));
     const body = node("div", "body");
     if (r.answer) markdown(body, r.answer);
     else body.append(node("div", "pending", terminal.has(r.status) ? "正在读取已保存的结果…" : "研究正在进行，结果会在完成后保存。"));
@@ -183,9 +184,45 @@ function renderMessages(runs) {
   icons();
 }
 function modelName(id) { return state.config?.models.find(m => m.id === id)?.name || id; }
+function reviewStatusDetails(status) {
+  const scope = (status.scope_labels || status.scope || []).join("、") || "未记录";
+  return `范围：${scope} · 已执行 ${status.rounds ?? 0} 轮${status.draft_revision ? ` · 草稿版本 ${status.draft_revision}` : ""}`;
+}
+function reviewStatusPanel(statuses, showEmpty = true) {
+  const panel = node("section", "review-status-list"); panel.setAttribute("aria-label", "运行记录中的核验结论");
+  panel.append(node("div", "section-label", "核验结论 · 运行记录"));
+  if (!statuses.length) { if (showEmpty) panel.append(node("p", "", "暂无专业分析的核验结论记录。")); else panel.hidden = true; return panel; }
+  for (const status of statuses) {
+    const item = node("div", "review-status-item");
+    const heading = node("div", "review-status-heading");
+    heading.append(symbol(status.status === "passed" ? "shield-check" : "clipboard-list"), node("b", "", status.label));
+    item.append(heading);
+    if (status.objective) item.append(node("p", "review-objective", status.objective));
+    item.append(node("p", "", reviewStatusDetails(status)));
+    if (status.draft_ref) item.append(node("code", "", `草稿：${status.draft_ref}`));
+    if (status.report_ref) item.append(node("code", "", `核验报告：${status.report_ref}`));
+    if (status.result_artifact_ref) {
+      const read = node("button", "trace-link", "查看分析快照");
+      read.onclick = () => openArtifact(status.result_artifact_ref).catch(e => error(e.message)); item.append(read);
+    }
+    panel.append(item);
+  }
+  panel.append(node("p", "review-notice", statuses[0].scope_notice), node("p", "review-notice", statuses[0].snapshot_notice));
+  return panel;
+}
+function reportMarkdown(run) {
+  const statuses = run.metadata?.review_statuses || [];
+  const review = statuses.length ? statuses.map(s => [
+    `### ${s.label}`, s.objective || "", reviewStatusDetails(s),
+    s.task_id ? `任务：\`${s.task_id}\`` : "", s.draft_ref ? `草稿：\`${s.draft_ref}\`` : "",
+    s.report_ref ? `核验报告：\`${s.report_ref}\`` : "",
+  ].filter(Boolean).join("\n\n")).join("\n\n") : "暂无专业分析的核验结论记录。";
+  const notice = statuses.length ? `\n\n${statuses[0].scope_notice}\n\n${statuses[0].snapshot_notice}` : "";
+  return `# 研究报告\n\n研究问题：${run.query}\n\n模型：${run.profile}\n\n## 核验结论 · 运行记录\n\n${review}${notice}\n\n---\n\n${run.answer}`;
+}
 function downloadReport(run) {
   if (!run.answer) { toast("报告尚未生成"); return; }
-  const blob = new Blob([`# 研究报告\n\n研究问题：${run.query}\n\n模型：${run.profile}\n\n${run.answer}`], {type: "text/markdown;charset=utf-8"});
+  const blob = new Blob([reportMarkdown(run)], {type: "text/markdown;charset=utf-8"});
   const link = node("a"); const url = URL.createObjectURL(blob); link.href = url; link.download = `research-${run.run_id}.md`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function executionSummary(root) {
@@ -241,6 +278,7 @@ function renderTasks(view) {
     }
     const b = t.budget;
     box.append(node("small", "", `已用 ${b.consumed ?? 0} 次 · 剩余 ${b.remaining ?? "—"} 次 · ${t.attempts.length} 个 Attempt`));
+    if (t.review_status) box.append(reviewStatusPanel([t.review_status]));
     if (t.failure_diagnostic) box.append(node("pre", "", JSON.stringify(t.failure_diagnostic, null, 2)));
     if (t.result_artifact_ref) {
       const read = node("button", "trace-link", "查看结果");
@@ -341,6 +379,7 @@ async function openArtifact(ref) {
   artifact = {ref, offset: 0, run: state.run, session: state.session, archive: state.archive, text: "", loading: false};
   el("artifact-title").textContent = ref; el("artifact-body").textContent = "";
   el("artifact-preview").replaceChildren(node("div", "pending", "正在读取资料…")); el("artifact-progress").textContent = ""; el("artifact-completeness").textContent = "";
+  el("artifact-review-status").replaceChildren(); el("artifact-review-status").hidden = true;
   el("more-artifact").hidden = true; el("retry-artifact").hidden = true; el("artifact-error").hidden = true;
   artifactTab("preview"); if (!el("artifact-dialog").open) el("artifact-dialog").showModal(); await moreArtifact();
 }
@@ -369,6 +408,10 @@ async function moreArtifact() {
     const page = await api(path);
     if (a !== artifact) return;
     a.text += page.content; a.offset = page.next_offset;
+    const presentation = el("artifact-review-status"); presentation.replaceChildren();
+    presentation.hidden = !(page.review_status || page.snapshot_notice);
+    if (page.review_status) presentation.append(reviewStatusPanel([page.review_status]));
+    else if (page.snapshot_notice) presentation.append(node("p", "review-notice", `${page.draft_revision ? `送审草稿 · 版本 ${page.draft_revision}。` : ""}${page.snapshot_notice}`));
     el("artifact-body").textContent = a.text;
     const readable = readableArtifact(a.text);
     if (page.has_more || readable.raw) { const pre = node("pre", "", readable.content); el("artifact-preview").replaceChildren(pre); }
@@ -429,9 +472,11 @@ el("composer").addEventListener("submit", async (event) => {
   const query = el("query").value.trim(); if (!query) return;
   state.busy = true;
   const session = state.session, profile = el("model").value;
+  const mode = el("review-mode")?.value || "";
+  const constraints = mode ? {analyst_review_mode: mode} : undefined;
   const storageKey = `finance.h2.pending.${session}`;
   let pending = JSON.parse(localStorage.getItem(storageKey) || "null");
-  if (!pending || pending.query !== query || pending.model_profile !== profile) pending = {query, model_profile: profile, request_id: crypto.randomUUID()};
+  if (!pending || pending.query !== query || pending.model_profile !== profile || JSON.stringify(pending.dispatch_constraints) !== JSON.stringify(constraints)) pending = {query, model_profile: profile, request_id: crypto.randomUUID(), ...(constraints ? {dispatch_constraints: constraints} : {})};
   localStorage.setItem(storageKey, JSON.stringify(pending));
   el("send").disabled = true; error();
   try {

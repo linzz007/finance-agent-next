@@ -58,6 +58,7 @@ def _spawn(key, role="general", **overrides):
         "output_contract": {"name": "finance.analyst_result" if analyst else (
             "finance.task_result" if role == "general" else "finance.research_result"),
             "version": "2" if analyst else "1"},
+        **({"review_mode": "auto"} if analyst else {}),
         **overrides,
     }, strict=True)
 
@@ -102,7 +103,11 @@ def test_simple_review_mode_defaults_to_five_and_persists_normalized_policy(tmp_
     repo.migrate()
     root = _create(_service(repo, rule_root), "review-mode")
     lease = _claim(repo, root.task_id)
-    request = _spawn("analyst", "analyst", **({"review_mode": mode} if mode else {}))
+    request = _spawn("analyst", "analyst", review_mode=mode)
+    if mode is None:
+        with pytest.raises(DispatchError, match="explicit"):
+            repo.spawn(lease.caller(), request)
+        return
     child = repo.spawn(lease.caller(), request)["data"]
     assert repo.spawn(lease.caller(), request)["data"]["task_id"] == child["task_id"]
     brief = repo.execution_input(_claim(repo, child["task_id"]))["brief"]
@@ -232,7 +237,7 @@ def test_old_v2_snapshot_keeps_original_profile_permissions_and_default_three(tm
     service.rule_loader = lambda: old
     root = _create(service, "old-v2")
     lease = _claim(repo, root.task_id)
-    child = repo.spawn(lease.caller(), _spawn("old-analyst", "analyst"))["data"]
+    child = repo.spawn(lease.caller(), _spawn("old-analyst", "analyst", review_mode=None))["data"]
     child_lease = _claim(repo, child["task_id"])
     assert repo.execution_input(child_lease)["brief"]["review_policy"]["max_rounds"] == 3
     with pytest.raises(DispatchError):
@@ -374,7 +379,8 @@ def test_required_review_mode_executes_analyst_verifier_resume_and_root_delivery
             assert request["draft_revision"] == 1
             assert state["depth"] == 2
             return {"type": "final", "output": {
-                "schema_version": "finance.review_report.v1",
+                "schema_version": "finance.review_report.v2",
+                "verdict": "passed", "verdict_reason": "All assigned checks passed.", "blocking_finding_ids": [],
                 "reviewed_draft_ref": request["draft_ref"],
                 "reviewed_revision": request["draft_revision"],
                 "checked_target_ids": [t["target_id"] for t in request["targets"]],
@@ -407,7 +413,7 @@ def test_required_review_mode_executes_analyst_verifier_resume_and_root_delivery
             ))
         if not _child_results(state):
             return _tool("agent.wait", task_ids=[state["scheduled_children"][0]["task_id"]])
-        assert _child_results(state)[0]["review"]["status"] == "reviewed_with_resolutions"
+        assert _child_results(state)[0]["review"]["status"] == "passed"
         return _root_final(state)
 
     runtime = _runtime(tmp_path, decide, config=SchedulerConfig(run_concurrency=1, worker_concurrency=1))

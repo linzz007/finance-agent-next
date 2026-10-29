@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#F3F0EE">
   <title>Finance Agent | 投研工作台</title>
-  <link rel="stylesheet" href="/static/h2-workbench/style.css?v=110">
+  <link rel="stylesheet" href="/static/h2-workbench/style.css?v=113">
   <script defer src="/static/h2-workbench/lucide.min.js"></script>
   <script defer src="/static/h2-workbench/marked.min.js"></script>
   <script defer src="/static/h2-workbench/purify.min.js"></script>
-  <script defer src="/static/h2-workbench/app.js?v=110"></script>
+  <script defer src="/static/h2-workbench/app.js?v=113"></script>
 </head>
 <body>
   <a class="skip-link" href="#messages">跳至研究内容</a>
@@ -44,6 +44,7 @@
     <form id="composer">
       <label for="query" class="composer-label">研究问题</label>
       <textarea id="query" rows="2" maxlength="4096" placeholder="你想研究什么？" aria-label="研究问题" required></textarea>
+      <div class="research-options"><label for="review-mode">文章核验</label><select id="review-mode" aria-label="本轮文章核验要求"><option value="">按任务决定</option><option value="required">必须通过核验</option><option value="off">关闭核验</option></select></div>
       <div class="composer-actions"><span id="run-status" role="status">就绪</span><div><button id="cancel" type="button" class="quiet" hidden><i data-lucide="square"></i>停止研究</button><button id="send" class="primary" type="submit"><span>开始研究</span><i data-lucide="arrow-up"></i></button></div></div>
     </form>
     <footer class="workspace-footer"><span>FINANCE AGENT</span><span>独立思考，有据可循。</span><span>Research workspace / 2.0</span></footer>
@@ -60,7 +61,7 @@
     <section id="events" class="inspection-content" aria-label="Trace 事件" hidden><div id="trace-calls"></div></section>
     <footer class="inspector-footer"><i data-lucide="shield-check"></i><span>执行状态不等同于研究结论已获证实</span></footer>
   </aside>
-  <dialog id="artifact-dialog" aria-labelledby="artifact-heading"><header><div><span class="eyebrow">SOURCE &amp; RECORD</span><h2 id="artifact-heading">资料与执行记录</h2></div><button id="close-dialog" class="icon-button" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button></header><div class="artifact-meta"><code id="artifact-title"></code><span id="artifact-progress" role="status"></span></div><div class="tabs" role="tablist" aria-label="资料显示方式"><button id="artifact-preview-tab" role="tab" aria-selected="true">阅读视图</button><button id="artifact-raw-tab" role="tab" aria-selected="false">原始数据</button></div><div id="artifact-scroll"><div id="artifact-preview" class="body"></div><pre id="artifact-body" hidden></pre></div><div id="artifact-error" role="alert" hidden></div><footer class="artifact-footer"><span id="artifact-completeness"></span><button id="more-artifact" class="secondary" hidden><i data-lucide="chevron-down"></i>继续读取</button><button id="retry-artifact" class="secondary" hidden><i data-lucide="rotate-cw"></i>重试读取</button></footer></dialog>
+  <dialog id="artifact-dialog" aria-labelledby="artifact-heading"><header><div><span class="eyebrow">SOURCE &amp; RECORD</span><h2 id="artifact-heading">资料与执行记录</h2></div><button id="close-dialog" class="icon-button" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button></header><div class="artifact-meta"><code id="artifact-title"></code><span id="artifact-progress" role="status"></span></div><div class="tabs" role="tablist" aria-label="资料显示方式"><button id="artifact-preview-tab" role="tab" aria-selected="true">阅读视图</button><button id="artifact-raw-tab" role="tab" aria-selected="false">原始数据</button></div><div id="artifact-scroll"><div id="artifact-review-status" hidden></div><div id="artifact-preview" class="body"></div><pre id="artifact-body" hidden></pre></div><div id="artifact-error" role="alert" hidden></div><footer class="artifact-footer"><span id="artifact-completeness"></span><button id="more-artifact" class="secondary" hidden><i data-lucide="chevron-down"></i>继续读取</button><button id="retry-artifact" class="secondary" hidden><i data-lucide="rotate-cw"></i>重试读取</button></footer></dialog>
   <div id="toast" role="status" hidden></div>
 </body>
 </html>

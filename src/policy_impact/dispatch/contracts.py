@@ -77,7 +77,9 @@ class AgentSpawnProfileOptions(Command):
         default=None, description="Analyst only: required, auto, or off; defaults to auto.",
     )
     review_options: ReviewOptions | None = Field(
-        default=None, description="Analyst only: optional review scope, instructions, or smaller round cap.",
+        default=None,
+        description=("Analyst only: optional review scope and instructions. max_rounds defaults to five; "
+                     "set a smaller cap only when the user explicitly requests it."),
     )
 
 
@@ -127,6 +129,20 @@ class AgentSpawnInput(Command):
         return self
 
 
+class ExplicitAgentSpawnInput(AgentSpawnInput):
+    @model_validator(mode="after")
+    def explicit_analyst_mode(self):
+        if self.profile == "analyst" and (
+            self.profile_options is None or self.profile_options.review_mode is None
+        ):
+            raise ValueError("Analyst requires profile_options.review_mode: required, auto or off")
+        return self
+
+
+class DispatchConstraints(Command):
+    analyst_review_mode: ReviewMode
+
+
 class Spawn(Command):
     dispatch_key: Identifier
     role: Identifier
@@ -142,7 +158,8 @@ class Spawn(Command):
     )
     review_options: ReviewOptions | None = Field(
         default=None,
-        description="Optional Analyst v2 review scope, special instructions, or smaller round cap; default cap is five.",
+        description=("Optional Analyst v2 review scope and instructions. max_rounds defaults to five and "
+                     "may be lowered only on explicit user request."),
     )
     review_request: ReviewRequest | None = None
     requested_budget: BudgetRequest | None = None
@@ -306,6 +323,8 @@ class SchedulerConfig:
     root_task_calls: int = 120
     child_task_calls: int = 60
     child_ms: int = 1200000
+    minimum_child_ms: int = 600000
+    required_review_child_ms: int = 2700000
     root_reserve_calls: int = 24
     run_ms: int = 3600000
     run_reserve_ms: int = 600000

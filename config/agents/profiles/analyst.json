@@ -7,7 +7,7 @@
   "instructions": "analyst",
   "input_requirements": [
     "A task message, task-specific success_criteria, and explicitly authorized focal source handles.",
-    "output_contract defaults to the Analyst result contract; optional profile_options.review_mode and review_options control independent review."
+    "output_contract defaults to the Analyst result contract; profile_options.review_mode is required, while review_options is optional. Obey immutable dispatch_constraints."
   ],
   "output_contract": "finance.analyst_result.v2",
   "allowed_tools": [

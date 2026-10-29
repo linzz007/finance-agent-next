@@ -122,6 +122,29 @@ def wait_answer(client, session):
     pytest.fail("H2 workbench did not project the terminal answer")
 
 
+def test_web_review_selection_is_persisted_and_changed_replay_is_rejected(web, monkeypatch):
+    wb, calls = web
+    async def no_workers():
+        return None
+    monkeypatch.setattr(wb, "start", no_workers)
+    app = create_app(default_h2=True, h2_workbench=wb)
+    # Keep workers stopped to inspect creation authority without model requests.
+    with TestClient(app) as client:
+        session = client.post("/api/h2-workbench/sessions", json={}).json()["session_id"]
+        payload = {"query": "Analyze without review.", "model_profile": "fixture", "request_id": "review-policy",
+                   "dispatch_constraints": {"analyst_review_mode": "off"}}
+        response = client.post(f"/api/h2-workbench/sessions/{session}/messages", json=payload)
+        assert response.status_code == 202, response.text
+        run_id = response.json()["run_id"]
+        with wb.repository.db.connection() as connection:
+            assert wb.repository._run_dispatch_constraints(connection, run_id) == {"analyst_review_mode": "off"}
+        changed = client.post(f"/api/h2-workbench/sessions/{session}/messages", json={
+            **payload, "dispatch_constraints": {"analyst_review_mode": "required"},
+        })
+        assert changed.status_code == 409
+        assert not calls
+
+
 def test_web_path_reaches_real_h2_and_preserves_full_answer(web):
     wb, calls = web
     with TestClient(create_app(default_h2=True, h2_workbench=wb)) as client:
@@ -222,7 +245,8 @@ def test_session_boundary_origin_check_and_cancellation(web):
         assert wait_answer(client, s1)["status"] == "cancelled"
 
 
-def test_web_task_tree_exposes_real_child_and_wait_wake(web):
+@pytest.mark.parametrize("review_state", ["passed", "not_requested", "round_limit_reached"])
+def test_web_task_tree_exposes_real_child_and_wait_wake(web, review_state):
     wb, _ = web
 
     async def domain(context, caps):
@@ -261,7 +285,9 @@ def test_web_task_tree_exposes_real_child_and_wait_wake(web):
         )
 
     async def child(work, caps):
-        return Submission(result_key="child-final", content="Complete child result")
+        from tests.test_dispatch_review_presentation import result_wrapper
+        wrapper = result_wrapper(review_state, verdict="passed" if review_state == "passed" else None)
+        return Submission(result_key="child-final", content=json.dumps(wrapper, ensure_ascii=False))
 
     wb.service = FinanceHarnessV2Service(
         wb.repository,
@@ -287,3 +313,23 @@ def test_web_task_tree_exposes_real_child_and_wait_wake(web):
         assert "task.waiting" in kinds and "task.woken" in kinds
         assert final["metadata"]["warnings"] == ["Fixture warning"]
         assert final["metadata"]["gaps"] == ["An explicit fixture gap"]
+        reviews = final["metadata"]["review_statuses"]
+        assert len(reviews) == 1 and reviews[0]["status"] == review_state
+        assert reviews == view["review_statuses"]
+        assert reviews[0] == view["status"]["tasks"][1]["review_status"]
+        ref = reviews[0]["result_artifact_ref"]
+        response = client.get(f"/api/h2-workbench/runs/{final['run_id']}/artifacts/{ref}", params={
+            "session_id": session, "limit": 1,
+        })
+        assert response.status_code == 200, response.text
+        page = response.json()
+        assert page["has_more"] and len(page["content"]) == 1
+        assert page["review_status"]["status"] == review_state
+        assert "快照" in page["snapshot_notice"]
+        with wb.repository.db.connection() as conn:
+            event_count = conn.execute("SELECT count(*) FROM h2_events").fetchone()[0]
+        refreshed = client.get(f"/api/h2-workbench/sessions/{session}").json()["runs"][0]
+        assert refreshed["answer"] == final["answer"]
+        assert refreshed["metadata"]["review_statuses"] == reviews
+        with wb.repository.db.connection() as conn:
+            assert conn.execute("SELECT count(*) FROM h2_events").fetchone()[0] == event_count

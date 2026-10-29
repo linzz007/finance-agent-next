@@ -52,6 +52,44 @@ function harness() {
   return {context, elements};
 }
 
+test("Runtime review panel and export separate current approval from unchanged snapshot prose", () => {
+  const {context} = harness();
+  const status = {status: "passed", label: "核验通过", scope_labels: ["原文忠实度"], rounds: 4,
+    draft_revision: 4, draft_ref: "art_draft", report_ref: "res_report", task_id: "task_analyst",
+    snapshot_notice: "正文与限制为送审快照。", scope_notice: "不代表外部事实已核实。"};
+  const panel = context.reviewStatusPanel([status]);
+  assert.match(panel.textContent, /核验通过/);
+  assert.match(panel.textContent, /原文忠实度.*4 轮.*版本 4/);
+  assert.match(panel.textContent, /不代表外部事实已核实/);
+  const answer = "本稿尚待第 4 轮核验。\n\n宏观事实未经外部核实。";
+  const exported = context.reportMarkdown({query: "研究", profile: "fixture", answer,
+    metadata: {review_statuses: [status]}});
+  assert.match(exported, /核验结论 · 运行记录/);
+  assert.match(exported, /核验通过/);
+  assert.match(exported, /送审快照/);
+  assert.ok(exported.endsWith(answer));
+  assert.match(context.reviewStatusPanel([]).textContent, /暂无.*核验结论记录/);
+  assert.doesNotMatch(context.reportMarkdown({query: "Q", profile: "fixture", answer}), /### 核验通过/);
+});
+
+test("Paginated artifact reads show Runtime status immediately and keep raw snapshot bytes", async () => {
+  const {context, elements} = harness();
+  const raw = JSON.stringify({result: {content: "Still awaiting review.", limitations: ["External facts unverified."]}});
+  const presentation = {review_status: {status: "passed", label: "核验通过", rounds: 1,
+    scope_labels: ["原文忠实度"], snapshot_notice: "正文是快照。", scope_notice: "外部事实未验证。"}, snapshot_notice: "正文是快照。"};
+  let calls = 0;
+  context.fetch = async () => ({ok: true, json: async () => ({...presentation,
+    content: calls++ === 0 ? raw.slice(0, 8) : raw.slice(8), has_more: calls === 1,
+    next_offset: calls === 1 ? 8 : raw.length})});
+  vm.runInContext('artifact = {ref: "art_result", archive: "saved", offset: 0, text: "", loading: false}', context);
+  await context.moreArtifact();
+  assert.match(elements.get("artifact-review-status").textContent, /核验通过/);
+  assert.equal(elements.get("artifact-review-status").hidden, false);
+  await context.moreArtifact();
+  assert.equal(elements.get("artifact-body").textContent, raw);
+  assert.match(elements.get("artifact-preview").textContent, /Still awaiting review/);
+});
+
 test("Trace panel renders agent paths, model-call Attempt links, status, and event owner", () => {
   const {context, elements} = harness();
   const trace = {

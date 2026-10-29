@@ -25,7 +25,7 @@ CONTEXT_POLICY = {
 KNOWN_CONTRACTS = {
     "finance.research_task@1", "finance.research_result@1", "finance.analyst_result@2",
     "finance.review_request@1", "finance.review_report@1", "finance.child@1",
-    "finance.task_result@1",
+    "finance.task_result@1", "finance.review_report@2",
 }
 PROFILE_INPUT_CONTRACTS = {"finance.research_task@1", "finance.review_request@1"}
 PROFILE_OUTPUT_CONTRACTS = KNOWN_CONTRACTS - PROFILE_INPUT_CONTRACTS
@@ -94,6 +94,7 @@ class FinanceRules:
                 schema_v2 = False
             elif manifest.get("schema_version") in {
                 "finance.h2.agent_rules.v2", "finance.h2.agent_rules.v3", "finance.h2.agent_rules.v4",
+                "finance.h2.agent_rules.v5",
             }:
                 if set(manifest) not in (profile_fields, profile_fields | {"action_repair_limit"}):
                     raise ValueError("invalid profile manifest fields")
@@ -101,7 +102,7 @@ class FinanceRules:
             else:
                 raise ValueError("unsupported manifest schema")
             portable = manifest["schema_version"] in {
-                "finance.h2.agent_rules.v3", "finance.h2.agent_rules.v4",
+                "finance.h2.agent_rules.v3", "finance.h2.agent_rules.v4", "finance.h2.agent_rules.v5",
             }
             profile_paths = set()
             if portable:
@@ -177,7 +178,8 @@ class FinanceRules:
                         raise ValueError("invalid agent profile")
                     if portable and (
                         ("finance.analyst_result@2" in role["output_contracts"] and name != "analyst")
-                        or ("finance.review_report@1" in role["output_contracts"] and name != "verifier")
+                        or (set(role["output_contracts"]) & {"finance.review_report@1", "finance.review_report@2"}
+                            and name != "verifier")
                     ):
                         raise ValueError("specialist result contract requires its registered workflow")
             if schema_v2:
@@ -202,18 +204,26 @@ class FinanceRules:
     def manifest(self):
         assets = self.snapshot()["assets"]
         manifest = json.loads(assets[MANIFEST_PATH]["content"])
-        if manifest["schema_version"] in {"finance.h2.agent_rules.v3", "finance.h2.agent_rules.v4"}:
+        if manifest["schema_version"] in {
+            "finance.h2.agent_rules.v3", "finance.h2.agent_rules.v4", "finance.h2.agent_rules.v5",
+        }:
             manifest["roles"] = {name: json.loads(assets[path]["content"])
                                  for name, path in manifest["roles"].items()}
         return manifest
 
     @property
     def portable_profiles(self):
-        return self.manifest["schema_version"] in {"finance.h2.agent_rules.v3", "finance.h2.agent_rules.v4"}
+        return self.manifest["schema_version"] in {
+            "finance.h2.agent_rules.v3", "finance.h2.agent_rules.v4", "finance.h2.agent_rules.v5",
+        }
 
     @property
     def compact_spawn(self):
-        return self.manifest["schema_version"] == "finance.h2.agent_rules.v4"
+        return self.manifest["schema_version"] in {"finance.h2.agent_rules.v4", "finance.h2.agent_rules.v5"}
+
+    @property
+    def review_verdicts(self):
+        return self.manifest["schema_version"] == "finance.h2.agent_rules.v5"
 
     @property
     def action_repair_limit(self):
@@ -223,6 +233,7 @@ class FinanceRules:
     def has_profiles(self):
         return self.manifest["schema_version"] in {
             "finance.h2.agent_rules.v2", "finance.h2.agent_rules.v3", "finance.h2.agent_rules.v4",
+            "finance.h2.agent_rules.v5",
         }
 
     def role_profile(self, role: str, role_version: str | None = None):
@@ -326,7 +337,7 @@ def load_rules(root: Path = PROJECT_ROOT) -> FinanceRules:
         assets = {MANIFEST_PATH: manifest_asset}
         profile_paths = (list(manifest["roles"].values())
                          if manifest["schema_version"] in {
-                             "finance.h2.agent_rules.v3", "finance.h2.agent_rules.v4",
+                             "finance.h2.agent_rules.v3", "finance.h2.agent_rules.v4", "finance.h2.agent_rules.v5",
                          } else [])
         for path in [*manifest["prompts"].values(), manifest["tool_descriptions"], *profile_paths]:
             if (not isinstance(path, str) or not path.startswith(("prompts/finance/", "config/agents/profiles/"))

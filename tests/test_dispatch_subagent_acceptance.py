@@ -51,7 +51,10 @@ def _assignment(case, state, refs, **extra):
 def _review_output(state, source_ref):
     request = state["review_request"]
     return {"type": "final", "output": {
-        "schema_version": "finance.review_report.v1",
+        "schema_version": "finance.review_report.v2",
+        "verdict": "revision_required" if request["round_number"] == 1 else "passed",
+        "verdict_reason": "Revise the condition." if request["round_number"] == 1 else "All checks passed.",
+        "blocking_finding_ids": ["condition-loss"] if request["round_number"] == 1 else [],
         "reviewed_draft_ref": request["draft_ref"], "reviewed_revision": request["draft_revision"],
         "checked_target_ids": [target["target_id"] for target in request["targets"]],
         "findings": [{

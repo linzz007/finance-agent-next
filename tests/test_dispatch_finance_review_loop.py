@@ -14,7 +14,7 @@ from policy_impact.dispatch.contracts import DispatchError
 from policy_impact.dispatch.finance_agent import FinanceH2Domain
 from policy_impact.dispatch.finance_research import FinanceH2ResearchDomain
 from policy_impact.dispatch.finance_root import FinanceRootContext, FinanceRootState
-from policy_impact.dispatch.finance_rules import legacy_rules, load_rules
+from policy_impact.dispatch.finance_rules import FinanceRules, legacy_rules, load_rules
 from policy_impact.runtime.actions import AgentAction
 from policy_impact.runtime.research_contracts import AnalystResearchResult, ReviewReport
 
@@ -246,6 +246,13 @@ async def _dispatch_and_return_report(domain, context, step, capabilities, *, fi
         "validation_warnings": [],
         "accepted_evidence_refs": ["material.alpha"] if findings else [],
     }
+    if FinanceRules.from_snapshot(capabilities.instruction_rules).review_verdicts:
+        wrapper["report"].update(
+            schema_version="finance.review_report.v2",
+            verdict="revision_required" if findings else "passed",
+            verdict_reason="A source condition needs revision." if findings else "All requested checks passed.",
+            blocking_finding_ids=[item["finding_id"] for item in wrapper["report"]["findings"]],
+        )
     observation = {"tasks": [{
         "task_id": task_id,
         "status": "succeeded",
@@ -282,7 +289,7 @@ def test_required_review_round_trip_carries_report_and_accumulates_finding_dispo
     messages = asyncio.run(domain._messages(context.query, state_after_first_report, [], capabilities))
     user = json.loads(messages[-1]["content"])
     assert user["review_workflow"]["status"] == "report_ready"
-    assert any("finance.review_report.v1" in json.dumps(item) for item in user["materials"])
+    assert any("finance.review_report.v2" in json.dumps(item) for item in user["materials"])
 
     accepted = [{"finding_id": "r1-condition-loss", "disposition": "accepted", "rationale": None}]
     revised = "The author keeps the view conditional. Funding remains available."
@@ -308,7 +315,7 @@ def test_required_review_round_trip_carries_report_and_accumulates_finding_dispo
     ))
     saved = capabilities.artifacts[final.submission.full_ref]
     assert final.status == final.submission.status == "succeeded"
-    assert saved["review"]["status"] == "reviewed_with_resolutions"
+    assert saved["review"]["status"] == "passed"
     assert saved["review"]["rounds"] == 2
     assert len(saved["review"]["report_refs"]) == 2
     assert saved["review"]["dispositions"] == accepted
@@ -464,14 +471,16 @@ def test_required_policy_forces_review_even_when_analyst_says_skip():
     assert step.state.execution["review_workflow"]["status"] == "dispatch_pending"
 
 
-def test_required_review_without_any_target_is_rejected_before_delivery():
+def test_required_review_without_any_target_gets_correctable_feedback_before_delivery():
     context = _context()
+    caps = ReviewCapabilities()
     output = _analyst_result(decision="skip", reason="No target was supplied.")
     output["review_targets"] = []
-    with pytest.raises(DispatchError, match="needs at least one target"):
-        asyncio.run(FinanceH2ResearchDomain(None)._final(
-            context, context.state, output, ReviewCapabilities(),
-        ))
+    step = asyncio.run(FinanceH2ResearchDomain(None)._final(context, context.state, output, caps))
+    assert step.status == "continuing" and step.submission is None
+    feedback = caps.artifacts[step.state.execution["action_observation_refs"][-1]]
+    assert feedback["error"]["validation_stage"] == "review.targets"
+    assert feedback["error"]["validation_warnings"] == ["provide_at_least_one_review_target"]
 
 
 def test_root_turns_research_task_into_profile_brief_and_legacy_runs_keep_old_contract():

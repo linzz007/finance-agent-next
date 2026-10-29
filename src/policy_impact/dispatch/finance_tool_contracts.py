@@ -7,7 +7,14 @@ from pydantic import Field, TypeAdapter, create_model
 from policy_impact.domains.finance.tool_contracts import INPUTS, Input, Page
 from policy_impact.runtime.actions import AgentAction
 
-from .contracts import AgentSpawnInput, BudgetRequest, DispatchError, OutputContract, Spawn
+from .contracts import (
+    AgentSpawnInput,
+    BudgetRequest,
+    DispatchError,
+    ExplicitAgentSpawnInput,
+    OutputContract,
+    Spawn,
+)
 from .finance_rules import load_rules
 
 ARTICLE_TOOLS = frozenset({"article.list", "article.search", "article.read", "article.claims"})
@@ -74,6 +81,14 @@ def delegation_policy(task_budget=None, *, rules=None) -> dict:
         policy.pop("budget_parameter")
         policy.update(budget_policy="fixed", child_task_calls=budget["child_task_calls"],
                       call_counts_model_selected=False, run_budget=budget["run_budget"])
+        if type(budget.get("child_window_ms")) is int:
+            policy["default_child_window_ms"] = budget["child_window_ms"]
+        if type(budget.get("minimum_child_window_ms")) is int:
+            policy["minimum_default_child_window_ms"] = budget["minimum_child_window_ms"]
+        if type(budget.get("required_review_child_window_ms")) is int:
+            policy["required_analyst_review_window_ms"] = budget["required_review_child_window_ms"]
+        if budget.get("child_window_policy") == "minimum_floor":
+            policy["minimum_default_window_enforced"] = True
         for value in policy["legacy_delegate"]["requested_budget_by_role"].values():
             value["model_calls"] = budget["child_task_calls"]
     return policy
@@ -87,7 +102,8 @@ def normalize_agent_spawn(arguments: dict, *, dispatch_key: str, task_budget: di
     """Translate the compact v4 model request into the existing durable Spawn contract."""
     if not rules.compact_spawn:
         raise DispatchError("invalid_arguments", "compact agent.spawn is unavailable for this frozen Run")
-    request = AgentSpawnInput.model_validate(arguments, strict=True)
+    model = ExplicitAgentSpawnInput if rules.review_verdicts else AgentSpawnInput
+    request = model.model_validate(arguments, strict=True)
     profile_name = request.profile
     profile = rules.role_profile(profile_name)
     role_version = profile["versions"][0]
@@ -154,7 +170,13 @@ def describe(name: str, task_budget=None, *, rules=None) -> dict:
         return {"name": name, "parameters": TypeAdapter(AgentAction).json_schema(),
                 "delegation_policy": delegation_policy(task_budget, rules=rules)}
     if name == "agent.spawn" and rules.compact_spawn:
-        schema = AgentSpawnInput.model_json_schema()
+        schema = (ExplicitAgentSpawnInput if rules.review_verdicts else AgentSpawnInput).model_json_schema()
+        if rules.review_verdicts:
+                schema["allOf"] = [{"if": {"properties": {"profile": {"const": "analyst"}}, "required": ["profile"]},
+                                "then": {"required": ["profile_options"], "properties": {
+                                    "profile_options": {"type": "object", "required": ["review_mode"],
+                                                        "properties": {"review_mode": {
+                                                            "enum": ["required", "auto", "off"]}}}}}}]
         if (task_budget or {}).get("budget", {}).get("policy") == "fixed":
             schema.get("properties", {}).pop("requested_budget", None)
         return {
@@ -162,7 +184,15 @@ def describe(name: str, task_budget=None, *, rules=None) -> dict:
             "description": (
                 "Create a child Task. Required: task_name and message. profile defaults to general. "
                 "Use success_criteria for specialist Profiles; output_contract defaults from the Profile. "
-                "profile_options is Analyst-only. Runtime supplies dispatch_key and resolves the Profile version."
+                "profile_options is Analyst-only. Runtime supplies dispatch_key and resolves the Profile version. "
+                "Under fixed budgets, omitted wall_time_ms uses the Runtime default; required Analyst review "
+                "gets an extended window. Runtime enforces a 10-minute floor for shortened ordinary defaults "
+                "and rejects unavailable required-review windows; an explicit shorter wall_time_ms remains "
+                "available when sufficient for the task. "
+                + ("For required review, omitted review_options.max_rounds uses five; set a smaller cap only "
+                   "when the user explicitly requests it. " if rules.review_verdicts else "")
+                + ("Analyst requires explicit profile_options.review_mode on EVERY dispatch; obey "
+                   "dispatch_constraints. Missing or conflicting modes are rejected." if rules.review_verdicts else "")
             ),
             "parameters": schema,
             "profiles": rules.catalog(),

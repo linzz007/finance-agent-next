@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import shutil
 import sqlite3
@@ -30,6 +31,10 @@ CATALOG = ROOT / "tests/fixtures/h2_agent_scheduling_acceptance.json"
 
 def source_inventory():
     hashes = live.source_inventory()
+    hashes = {name: value for name, value in hashes.items()
+              if not name.startswith("docs/acceptance/")}
+    hashes = {name: value for name, value in hashes.items()
+              if not name.startswith("docs/acceptance/")}
     for folder in ("prompts/finance", "config/agents"):
         for path in (ROOT / folder).rglob("*"):
             if path.is_file():
@@ -110,6 +115,7 @@ def trace_facts(case_dir, record):
         calls = [dict(row) for row in connection.execute(
             "SELECT call_id,task_id,started_at,finished_at,status FROM h2_model_calls "
             "WHERE started_at IS NOT NULL")]
+        review_facts = review_trace_facts(connection, case_dir)
     finally:
         connection.close()
     overlapping_siblings = []
@@ -134,7 +140,57 @@ def trace_facts(case_dir, record):
             child["full_read_by_parent"] for child in children),
         "overlapping_sibling_requests": overlapping_siblings,
         "trace_path": str(trace_path), "semantic_acceptance": "manual_review_required",
+        **review_facts,
     }
+
+
+def review_trace_facts(connection, case_dir):
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not {"h2_artifacts", "h2_results", "h2_threads"} <= tables:
+        return {"review_states": [], "corrective_observations": []}
+    artifacts = {row["artifact_ref"]: dict(row) for row in connection.execute("SELECT * FROM h2_artifacts")}
+
+    def load(ref):
+        row = artifacts[ref]
+        content = (case_dir / "records" / row["storage_uri"]).read_bytes()
+        if len(content) != row["byte_length"] or hashlib.sha256(content).hexdigest() != row["sha256"]:
+            raise ValueError("saved review artifact failed integrity validation")
+        try:
+            return json.loads(content)
+        except (ValueError, UnicodeDecodeError):
+            return {}
+
+    states = []
+    for row in connection.execute(
+        "SELECT t.task_id,t.status,t.brief_ref,th.role,r.full_ref FROM h2_tasks t "
+        "JOIN h2_threads th USING(thread_id) LEFT JOIN h2_results r ON r.result_ref=t.result_ref"
+    ):
+        brief = load(row["brief_ref"])
+        full = load(row["full_ref"]) if row["full_ref"] else {}
+        review = full.get("review") or {}
+        report = full.get("report") or {}
+        states.append({"task_id": row["task_id"], "role": row["role"], "status": row["status"],
+                       "review_policy": brief.get("review_policy"), "review": review,
+                       "report_verdict": report.get("verdict"),
+                       "report_draft_ref": report.get("reviewed_draft_ref"),
+                       "report_revision": report.get("reviewed_revision"),
+                       "report_validation": full.get("validation_status"),
+                       "blocking_finding_ids": report.get("blocking_finding_ids", [])})
+    observations = []
+    for ref in artifacts:
+        value = load(ref)
+        if not isinstance(value, dict) or value.get("status") != "failed":
+            continue
+        if value.get("tool_name") not in {"final", "agent.spawn"}:
+            continue
+        error = value.get("error") or value.get("payload", {}).get("error") or {}
+        observations.append({"artifact_ref": ref, "tool": value["tool_name"],
+                             "correction_number": value.get("correction_number"),
+                             "error": {key: error[key] for key in (
+                                 "code", "field", "expected", "validation_stage", "validation_errors",
+                                 "missing_finding_ids", "unknown_finding_ids", "validation_warnings",
+                             ) if key in error}})
+    return {"review_states": states, "corrective_observations": observations}
 
 
 def main():
@@ -169,6 +225,7 @@ def main():
     manifest = {
         "schema_version": "finance.h2.scheduling_live.v2", "started_at": now(),
         "queries": {key: questions[key] for key in args.cases}, "source_hashes": sources,
+        "dispatch_constraints_by_case": catalog.get("dispatch_constraints_by_case", {}),
         "snapshot": snapshot, "research_day": research_day, "profiles": profiles,
         "automatic_fallback": False, "transport_backend": "fakeredis", "real_redis_verified": False,
         "worker_count": live.acceptance_config("preflight").worker_concurrency,
@@ -189,6 +246,7 @@ def main():
                     output / "cases" / key, case_id=key, query=questions[key], corpus=corpus,
                     profiles=profiles, selected_profile=args.model_profile, backend="fake",
                     research_clock={"today": research_day, "timezone": "Asia/Shanghai"},
+                    dispatch_constraints=catalog.get("dispatch_constraints_by_case", {}).get(key),
                 )
                 facts = trace_facts(output / "cases" / key, record)
                 write_json(output / "cases" / key / "trace-facts.json", facts)

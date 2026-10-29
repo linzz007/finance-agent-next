@@ -6,6 +6,29 @@ The internal Python namespace `policy_impact` is retained for compatibility.
 
 ## Read First
 
+113 separates Runtime review status from immutable analysis snapshots. Current
+labels derive from accepted result.review records and are projected consistently
+to parent context after complete result reads, live/archive workbench views,
+artifact readers and Markdown exports. Preserve reviewed bytes and historical
+process prose, mark snapshot timing, and retain genuine external-evidence gaps.
+No model-written label can override this projection. New rules are frozen for
+new Runs; do not replace historical snapshots. See docs/changes/113.
+Validation: broad related 538 passed, final provenance patch 28 passed, frontend
+11 passed. Read-only replay checked 1,315 artifacts and unchanged 1,349 files;
+1440/390/360 browser views and export passed with zero mutations/model calls.
+See docs/acceptance/h2-review-status-presentation-20261029.md for scope and limits.
+
+111 implements approved v5 rules: every new Analyst 2.0 dispatch explicitly
+supplies review_mode; optional trusted Run dispatch_constraints are immutable and enforced
+at every depth. Formal ReviewReport v2 includes verdict/reason/blocking IDs.
+Required success needs reviewer passed on the exact full final draft and targets,
+with complete dispositions; otherwise re-review within five rounds or partial.
+Correctable domain contract errors get bounded persisted observations and up to
+five same-task corrections, with original model/budgets/time. v1-v4 snapshots
+retain old semantics. Focused regression and paid SCH-02/03 revalidation facts,
+Trace, and verdict are recorded in
+docs/acceptance/h2-review-policy-scheduling-20261028.md. Preserve all earlier records.
+
 The 2026-10-28 scheduling Trace re-audit independently checks four historical
 Runs against read-only SQLite, 1,741 events and 962 artifact hashes/lengths.
 No paid calls or historical mutations; current focused regression: 61 passed.

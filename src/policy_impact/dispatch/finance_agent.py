@@ -29,6 +29,7 @@ from .finance_public_sources import (
     public_source_read,
     remember_public_source,
 )
+from .finance_review_status import build_review_status
 from .finance_root import FinanceRootContext, FinanceRootExecutor, FinanceStep
 from .finance_rules import rules_for
 from .finance_tool_contracts import (
@@ -169,6 +170,8 @@ class FinanceH2Domain:
         execution["task_budget"] = {
             key: context.brief[key] for key in ("budget", "deadline_at") if key in context.brief
         }
+        if context.brief.get("dispatch_constraints"):
+            execution["dispatch_constraints"] = context.brief["dispatch_constraints"]
         execution["task_identity"] = {
             key: context.brief[key] for key in (
                 "run_id", "thread_id", "task_id", "attempt_id", "parent_task_id",
@@ -308,6 +311,22 @@ class FinanceH2Domain:
                 "code": exc.code if isinstance(exc, DispatchError) else "invalid_arguments",
                 "message": "Scheduler action rejected; inspect the authorized tool description and current state.",
             }}
+            if rules_for(capabilities).review_verdicts:
+                if isinstance(exc, ValidationError):
+                    from .diagnostics import public_validation_errors
+                    payload["error"]["validation_errors"] = public_validation_errors(
+                        exc.errors(include_input=False, include_context=False))
+                elif exc.code == "invalid_arguments":
+                    payload["error"].update({
+                        "message": str(exc)[:500],
+                        **{key: str(exc.details[key])[:160] for key in ("field", "expected") if key in exc.details},
+                    })
+                elif exc.code == "budget_denied" and exc.details.get("scope") == "time":
+                    payload["error"].update({
+                        "message": "Child dispatch was not created because its time window does not fit the remaining budget.",
+                        **{key: exc.details[key] for key in ("required_ms", "available_ms", "window_kind")
+                           if key in exc.details},
+                    })
         observation_ref = await capabilities.store_context({
             "schema_version": "finance.h2.action_observation.v1", "action_key": action_key,
             "tool_name": action.tool_name, "status": status, "payload": payload,
@@ -337,33 +356,42 @@ class FinanceH2Domain:
                 results[payload["result_ref"]] = {"sha256": payload["sha256"], "pages": pages}
                 execution["result_pages"] = results
                 next_state = next_state.model_copy(update={"execution": execution})
+                full_content = await self._retrieved_result(next_state, payload["result_ref"], capabilities)
+                parsed = None
+                if full_content is not None:
+                    try:
+                        parsed = json.loads(full_content)
+                    except json.JSONDecodeError:
+                        parsed = {"content": full_content}
+                    self._remember_review_status(execution, parsed, payload["result_ref"])
                 workflow = _as_object(execution.get("review_workflow"))
                 if (workflow.get("status") == "report_pending_read"
-                        and workflow.get("pending_result_ref") == payload["result_ref"]):
-                    full_content = await self._retrieved_result(
-                        next_state, payload["result_ref"], capabilities,
+                        and workflow.get("pending_result_ref") == payload["result_ref"]
+                        and full_content is not None):
+                    material_ref = await capabilities.store_context({
+                        "schema_version": "finance.h2.material.v1",
+                        "source_task_id": workflow.get("pending_task_id"),
+                        "result_ref": payload["result_ref"],
+                        "payload": parsed,
+                    })
+                    execution["material_refs"] = list(dict.fromkeys([
+                        *execution.get("material_refs", []), material_ref,
+                    ]))
+                    execution["review_workflow"] = self._record_review_report(
+                        dict(workflow), parsed, result_ref=payload["result_ref"],
+                        material_ref=material_ref,
                     )
-                    if full_content is not None:
-                        try:
-                            parsed = json.loads(full_content)
-                        except json.JSONDecodeError:
-                            parsed = {"content": full_content}
-                        material_ref = await capabilities.store_context({
-                            "schema_version": "finance.h2.material.v1",
-                            "source_task_id": workflow.get("pending_task_id"),
-                            "result_ref": payload["result_ref"],
-                            "payload": parsed,
-                        })
-                        execution["material_refs"] = list(dict.fromkeys([
-                            *execution.get("material_refs", []), material_ref,
-                        ]))
-                        execution["review_workflow"] = self._record_review_report(
-                            dict(workflow), parsed, result_ref=payload["result_ref"],
-                            material_ref=material_ref,
-                        )
         return FinanceStep(status="continuing", state=next_state.model_copy(update={
             "execution": execution, "completed_steps": [*state.completed_steps, action_key],
         }))
+
+    @staticmethod
+    def _remember_review_status(execution, artifact, result_ref):
+        status = build_review_status(artifact)
+        if status is not None:
+            statuses = dict(execution.get("child_review_statuses") or {})
+            statuses[result_ref] = {**status, "result_ref": result_ref}
+            execution["child_review_statuses"] = statuses
 
     @staticmethod
     def _record_review_report(workflow, artifact, *, result_ref, material_ref):
@@ -371,7 +399,7 @@ class FinanceH2Domain:
         report = _as_object(review_artifact.get("report"))
         if (review_artifact.get("schema_version") == "finance.h2.review_report.v1"
                 and review_artifact.get("validation_status") == "complete"
-                and report.get("schema_version") == "finance.review_report.v1"
+                and report.get("schema_version") in {"finance.review_report.v1", "finance.review_report.v2"}
                 and report.get("reviewed_draft_ref") == workflow.get("pending_draft_ref")
                 and report.get("reviewed_revision") == workflow.get("pending_revision")):
             workflow.pop("pending_task_id", None)
@@ -392,6 +420,32 @@ class FinanceH2Domain:
                     *workflow.get("report_refs", []), result_ref,
                 ])),
             )
+            if report.get("schema_version") == "finance.review_report.v2":
+                workflow.update(verdict=report.get("verdict"), verdict_reason=report.get("verdict_reason"),
+                                blocking_finding_ids=report.get("blocking_finding_ids", []))
+                digest = workflow.get("draft_sha256")
+                scope = workflow.get("review_scope")
+                if isinstance(digest, str) and isinstance(scope, list):
+                    raw_approvals = workflow.get("approved_drafts")
+                    approvals = ([dict(item) for item in raw_approvals if isinstance(item, Mapping)]
+                                 if isinstance(raw_approvals, list) else [])
+                    approvals = [item for item in approvals
+                                 if not (item.get("draft_sha256") == digest
+                                         and item.get("review_scope") == scope)]
+                    if (report.get("verdict") == "passed" and not report.get("blocking_finding_ids")
+                            and not report.get("unchecked_scope")):
+                        approvals.append({
+                            "draft_sha256": digest,
+                            "draft_ref": workflow.get("reviewed_draft_ref"),
+                            "draft_revision": workflow.get("reviewed_revision"),
+                            "report_ref": result_ref,
+                            "report_material_ref": material_ref,
+                            "review_scope": scope,
+                            "verdict": "passed",
+                            "verdict_reason": report.get("verdict_reason"),
+                            "blocking_finding_ids": [],
+                        })
+                    workflow["approved_drafts"] = approvals[-5:]
         else:
             workflow.pop("pending_task_id", None)
             workflow.pop("pending_draft_ref", None)
@@ -1137,6 +1191,8 @@ class FinanceH2Domain:
                         parsed = json.loads(full_content)
                     except json.JSONDecodeError:
                         parsed = {"content": full_content}
+                    if successful and isinstance(result_ref, str):
+                        self._remember_review_status(execution, parsed, result_ref)
                     ref = await capabilities.store_context({
                         "schema_version": "finance.h2.material.v1",
                         "source_task_id": task.get("task_id"),
@@ -1334,6 +1390,8 @@ class FinanceH2Domain:
             **({"research_roles": rules.catalog()} if rules.catalog() else {}),
             "instruction_rules": {"sha256": rules.sha256, "version": rules.manifest["version"]},
             "task_budget": _as_object(execution.get("task_budget")),
+            **({"dispatch_constraints": execution["dispatch_constraints"]}
+               if execution.get("dispatch_constraints") else {}),
             "task_identity": _as_object(execution.get("task_identity")),
             **({"research_clock": execution["research_clock"]} if "research_clock" in execution else {}),
             "next_action_key": execution.get("next_action_key"),
@@ -1352,6 +1410,7 @@ class FinanceH2Domain:
             "normalized_observations": normalized_observations,
             "action_observations": action_observations,
             "scheduled_children": execution.get("scheduled_children", []),
+            "child_review_statuses": list(_as_object(execution.get("child_review_statuses")).values()),
             "mailbox": mailbox,
             "materials": materials,
             **({"public_sources": execution["public_sources"]} if execution.get("public_sources") else {}),

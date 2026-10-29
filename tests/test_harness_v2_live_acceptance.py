@@ -409,10 +409,9 @@ def test_lower_cap_accounts_for_child_format_correction_in_the_same_tree(tmp_pat
             }})
         if counts[role] == 1:
             return response({"type": "tool_call", "tool_name": "agent.spawn", "arguments": {
-                "dispatch_key": "bounded-child", "role": "verifier", "role_version": "1.0.0",
-                "objective": "Report the missing-source gap", "success_criteria": ["Disclose gaps"],
-                "input_refs": [], "output_contract": {"name": "finance.research_result", "version": "1"},
-                "wall_time_ms": 120000, "priority": -10,
+                "task_name": "bounded-child", "profile": "verifier",
+                "message": "Report the missing-source gap", "success_criteria": ["Disclose gaps"],
+                "input_refs": [],
             }})
         if counts[role] == 2:
             return response({"type": "tool_call", "tool_name": "agent.wait", "arguments": {
@@ -496,21 +495,25 @@ def test_fixed_child_reads_six_articles_and_delivers_beyond_eight_calls(tmp_path
                     refs.append(material["material_ref"])
             assert len(refs) == 7
             return response({"type": "final", "output": {
-                "schema_version": "finance.research_result.v1",
+                "schema_version": "finance.analyst_result.v2",
                 "content": "Six articles preserve conditional arguments; no external verification.",
                 "evidence_links": [{"text": "Six articles preserve conditional arguments; no external verification.",
                                     "evidence_refs": refs}],
                 "material_disposition": [], "gaps": [], "limitations": ["Source-only analysis."],
+                "review_targets": [], "review_decision": "skip",
+                "review_decision_reason": "This source-bound reading task has no independent review target.",
+                "review_dispositions": [],
             }})
         if index == 1:
             return response({"type": "tool_call", "tool_name": "article.list", "arguments": {}})
         if index == 2:
             assert len(state["article_states"]) == 6
             return response({"type": "tool_call", "tool_name": "agent.spawn", "arguments": {
-                "dispatch_key": state["next_action_key"], "role": "analyst", "role_version": "2.0.0",
-                "objective": "Read all six articles including the final page", "success_criteria": ["Source-bound result"],
+                "task_name": "Six-article source-bound analysis", "profile": "analyst",
+                "message": "Read all six articles including the final page",
+                "profile_options": {"review_mode": "auto"},
+                "success_criteria": ["Source-bound result"],
                 "input_refs": state["known_material_refs"],
-                "output_contract": {"name": "finance.research_result", "version": "1"}, "priority": -10,
             }})
         if index == 3:
             return response({"type": "tool_call", "tool_name": "agent.wait", "arguments": {

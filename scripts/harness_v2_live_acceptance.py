@@ -184,6 +184,7 @@ def run_h2_case(
     model_adapter=None, max_model_calls: int | None = None,
     public_sources=None, market_sources=None, personal_sources=None,
     research_clock: dict | None = None,
+    dispatch_constraints: dict | None = None,
 ) -> dict:
     from policy_impact.dispatch import DispatchRepository, FinanceHarnessV2Service
     from policy_impact.dispatch.model_execution import GatewayModelAdapter
@@ -226,6 +227,7 @@ def run_h2_case(
                "result.get", "article.list", "article.read", "article.search", "article.claims", "tool.describe", "material.get",
                *public_tools, *market_tools, *personal_tools],
         research_clock=research_clock,
+        dispatch_constraints=dispatch_constraints,
     )
     with repository.db.connection() as connection:
         persisted_clock = repository._research_clock(connection, run_id)
@@ -238,6 +240,7 @@ def run_h2_case(
         "public_source_tools_bound": public_tools,
         "market_source_tools_bound": market_tools,
         "research_clock": persisted_clock, "research_clock_bound_to_run": True,
+        "dispatch_constraints": dispatch_constraints or {},
         "research_clock_propagated_to_model": False,
         "handle": asdict(handle), "scheduler_config": asdict(config),
         "status": "running", "semantic_acceptance": "manual_review_required",

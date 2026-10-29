@@ -197,6 +197,30 @@ class ReviewReport(ResearchContract):
         return self
 
 
+class ReviewReportV2(ReviewReport):
+    schema_version: Literal["finance.review_report.v2"]
+    verdict: Literal["passed", "revision_required", "inconclusive"]
+    verdict_reason: Text
+    blocking_finding_ids: list[Text] = Field(max_length=100)
+
+    @model_validator(mode="after")
+    def consistent_verdict(self):
+        blockers = set(self.blocking_finding_ids)
+        findings = {item.finding_id: item for item in self.findings}
+        if len(blockers) != len(self.blocking_finding_ids) or blockers - findings.keys():
+            raise ValueError("blocking finding ids must be unique ids from this report")
+        required = {item.finding_id for item in self.findings
+                    if item.severity == "material" and item.assessment != "supported"}
+        if not required <= blockers:
+            raise ValueError("material adverse or inconclusive findings must block approval")
+        if self.verdict == "passed" and (blockers or self.unchecked_scope
+                                        or any(item.unchecked_scope for item in self.findings)):
+            raise ValueError("passed requires no blocking findings or unfinished requested checks")
+        if self.verdict == "revision_required" and not blockers:
+            raise ValueError("revision_required needs at least one blocking finding")
+        return self
+
+
 class ReviewDisposition(ResearchContract):
     finding_id: Annotated[StrictStr, Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9_.:-]+$")]
     disposition: Literal["accepted", "rejected_with_reason", "unresolved"]

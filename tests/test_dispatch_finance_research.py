@@ -462,6 +462,22 @@ def test_fixed_budget_guidance_bounds_optional_duration_and_failure_convergence(
     assert "simple counts, dates, author metadata" in guidance
     assert "at most one justified correction or alternative-path attempt" in guidance
     assert "leave room for delivery" in guidance
+    assert "full bounded task can reasonably finish" in guidance
+
+
+def test_delegation_policy_discloses_review_window_and_no_shrink_rule():
+    policy = delegation_policy({"budget": {
+        "policy": "fixed", "child_task_calls": 60,
+        "run_budget": {"limit": 600, "remaining": 600},
+        "child_window_ms": 1200000,
+        "minimum_child_window_ms": 600000,
+        "required_review_child_window_ms": 2700000,
+        "child_window_policy": "minimum_floor",
+    }})
+    assert policy["default_child_window_ms"] == 1200000
+    assert policy["minimum_default_child_window_ms"] == 600000
+    assert policy["required_analyst_review_window_ms"] == 2700000
+    assert policy["minimum_default_window_enforced"] is True
 
 
 @pytest.mark.parametrize("role", ["analyst", "verifier", "skeptic"])

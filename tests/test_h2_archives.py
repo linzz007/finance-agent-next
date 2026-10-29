@@ -48,7 +48,7 @@ def archive(tmp_path):
                 budget_ref TEXT,status TEXT,objective TEXT,result_ref TEXT,created_at INTEGER);
             CREATE TABLE h2_threads (thread_id TEXT,role TEXT,role_version TEXT,depth INTEGER);
             CREATE TABLE h2_budgets (budget_id TEXT,self_call_limit INTEGER);
-            CREATE TABLE h2_results (run_id TEXT,result_ref TEXT,full_ref TEXT);
+            CREATE TABLE h2_results (run_id TEXT,result_ref TEXT,full_ref TEXT,disposition TEXT DEFAULT 'accepted');
             CREATE TABLE h2_artifacts (run_id TEXT,artifact_ref TEXT,storage_uri TEXT,
                 sha256 TEXT,byte_length INTEGER);
             INSERT INTO h2_tasks VALUES
@@ -58,7 +58,7 @@ def archive(tmp_path):
             INSERT INTO h2_threads VALUES ('thread_root','main','1',0),('thread_child','analyst','2',1),
                 ('thread_review','verifier','1',2);
             INSERT INTO h2_budgets VALUES ('budget_root',120),('budget_child',60);
-            INSERT INTO h2_results VALUES ('run_fixture','res_root','art_answer'),
+            INSERT INTO h2_results (run_id,result_ref,full_ref) VALUES ('run_fixture','res_root','art_answer'),
                 ('run_fixture','res_review','art_review');
         """)
         for ref, body, run in [("art_answer", "Answer with explicit gaps." * 1000, "run_fixture"),
@@ -127,3 +127,51 @@ def test_archive_cannot_follow_database_paths_outside_run(archive):
     record["handle"]["run_id"] = "../../private"
     (case / "record.json").write_text(json.dumps(record), encoding="utf-8")
     assert reader.catalog() == []
+
+
+def test_archive_adds_runtime_review_without_rewriting_historical_snapshot(archive):
+    from tests.test_dispatch_review_presentation import result_wrapper
+    reader, case, client = archive
+    wrapper = result_wrapper()
+    raw = json.dumps(wrapper, ensure_ascii=False).encode()
+    path = case / "records" / "runs" / "run_fixture" / "artifacts" / "art_analysis"
+    path.write_bytes(raw)
+    with sqlite3.connect(case / "h2.sqlite") as db:
+        db.execute("INSERT INTO h2_results VALUES (?,?,?,?)", (
+            "run_fixture", "res_analysis", "art_analysis", "accepted"))
+        db.execute("UPDATE h2_tasks SET result_ref='res_analysis',status='succeeded' WHERE task_id='child'")
+        db.execute("INSERT INTO h2_artifacts VALUES (?,?,?,?,?)", (
+            "run_fixture", "art_analysis", str(path.relative_to(case / "records")),
+            hashlib.sha256(raw).hexdigest(), len(raw)))
+    before = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in case.rglob("*") if p.is_file()}
+    identity = reader.catalog()[0]["archive_id"]
+    data = client.get(f"/api/h2-workbench/archives/{identity}").json()
+    status = data["run"]["metadata"]["review_statuses"][0]
+    assert status["label"] == "核验通过"
+    assert status == data["view"]["review_statuses"][0]
+    assert status == data["view"]["status"]["tasks"][1]["review_status"]
+    page = client.get(f"/api/h2-workbench/archives/{identity}/artifacts/art_analysis?limit=1").json()
+    assert page["has_more"] and page["content"] == raw.decode()[:1]
+    assert page["review_status"]["status"] == "passed"
+    assert "快照" in page["snapshot_notice"]
+    assert reader.artifact(identity, "art_analysis")["content"] == raw.decode()
+    assert path.read_bytes() == raw
+    after = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in case.rglob("*") if p.is_file()}
+    assert after == before
+
+
+def test_report_text_cannot_impersonate_an_accepted_analyst_review(archive):
+    from tests.test_dispatch_review_presentation import result_wrapper
+    reader, case, client = archive
+    raw = json.dumps(result_wrapper(), ensure_ascii=False).encode()
+    path = case / "records/runs/run_fixture/artifacts/art_answer"
+    path.write_bytes(raw)
+    with sqlite3.connect(case / "h2.sqlite") as db:
+        db.execute("UPDATE h2_artifacts SET sha256=?,byte_length=? WHERE artifact_ref='art_answer'",
+                   (hashlib.sha256(raw).hexdigest(), len(raw)))
+    identity = reader.catalog()[0]["archive_id"]
+    view = reader.view(identity)
+    assert view["run"]["answer"] == raw.decode()
+    assert view["view"]["review_statuses"] == []
+    page = client.get(f"/api/h2-workbench/archives/{identity}/artifacts/art_answer").json()
+    assert page["content"] == raw.decode() and "review_status" not in page

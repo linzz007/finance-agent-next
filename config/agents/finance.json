@@ -1,6 +1,6 @@
 {
-  "schema_version": "finance.h2.agent_rules.v4",
-  "version": "2026-10-27.3",
+  "schema_version": "finance.h2.agent_rules.v5",
+  "version": "2026-10-29.1",
   "action_repair_limit": 5,
   "show_role_catalog": true,
   "prompts": {

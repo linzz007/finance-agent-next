@@ -9,6 +9,11 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from policy_impact.dispatch.contracts import DispatchError
+from policy_impact.dispatch.finance_review_status import (
+    artifact_review_presentation,
+    collect_review_statuses,
+    is_accepted_analyst_result,
+)
 from policy_impact.dispatch.storage import SAFE_ID, ArtifactStore
 
 
@@ -94,8 +99,10 @@ class H2Archives:
         case, record = self._entry(identity)
         with self._db(case) as connection:
             text = self._artifact(case, connection, record["handle"]["run_id"], ref)
+            trusted = is_accepted_analyst_result(connection, record["handle"]["run_id"], ref)
         return {"content": text[offset:offset + limit], "has_more": offset + limit < len(text),
-                "next_offset": min(offset + limit, len(text))}
+                "next_offset": min(offset + limit, len(text)),
+                **artifact_review_presentation(text, trusted_result=trusted)}
 
     def view(self, identity, *, after_event_id="0"):
         case, record = self._entry(identity)
@@ -108,6 +115,10 @@ class H2Archives:
         spans = trace["spans"]
         tasks = []
         with self._db(case) as connection:
+            reviews = collect_review_statuses(
+                connection, run_id, lambda ref: self._artifact(case, connection, run_id, ref),
+            )
+            reviews_by_task = {r["task_id"]: r for r in reviews}
             rows = connection.execute("""SELECT t.*,th.role,th.role_version,th.depth,
                 b.self_call_limit FROM h2_tasks t JOIN h2_threads th ON th.thread_id=t.thread_id
                 JOIN h2_budgets b ON b.budget_id=t.budget_ref
@@ -125,6 +136,8 @@ class H2Archives:
                         "status", "objective", "result_ref",
                     )},
                     "result_artifact_ref": result["full_ref"] if result else None,
+                    **({"review_status": reviews_by_task[row["task_id"]]}
+                       if row["task_id"] in reviews_by_task else {}),
                     "budget": {"consumed": calls, "remaining": max(0, row["self_call_limit"] - calls)},
                     "attempts": [{**span, "attempt_id": span["span_id"]} for span in spans
                                  if span["span_type"] == "attempt" and span["task_id"] == row["task_id"]],
@@ -137,7 +150,7 @@ class H2Archives:
         config = record["scheduler_config"]
         budget = {"root": config["root_task_calls"], "child": config["child_task_calls"],
                   "run": config["root_calls"], "minutes": config["run_ms"] // 60000}
-        metadata = record.get("finance_delivery") or {}
+        metadata = {**(record.get("finance_delivery") or {}), "review_statuses": reviews}
         return {
             "archive_id": identity, "batch": case.parent.parent.name, "case": record["case"],
             "readonly": True,
@@ -147,6 +160,7 @@ class H2Archives:
                 "run_id": run_id, "root_task_id": root["task_id"],
                 "model_profile": record["model_profile"], "transport_backend": record["transport_backend"],
                 "readonly": True, "budget": budget,
+                "review_statuses": reviews,
                 "status": {"tasks": tasks, "events": page, "has_more": len(events) > len(page),
                            "next_event_id": page[-1]["event_id"] if page else after_event_id},
                 "trace": {**trace, "events": page}, "metrics": record["metrics"], "driver_error": "",

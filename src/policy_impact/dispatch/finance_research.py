@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import replace
 
 from pydantic import ValidationError
@@ -13,6 +14,7 @@ from policy_impact.runtime.research_contracts import (
     ResearchResult,
     ReviewPolicy,
     ReviewReport,
+    ReviewReportV2,
     ReviewRequest,
     TaskResult,
 )
@@ -26,6 +28,7 @@ from .finance_agent import (
 from .finance_anchor_repair import ResearchAnchorRepair
 from .finance_personal_sources import personal_source_read
 from .finance_public_sources import public_source_read
+from .finance_review_status import build_review_status
 from .finance_root import FinanceStep
 from .finance_rules import rules_for
 from .finance_tool_contracts import MARKET_TOOLS, PERSONAL_TOOLS
@@ -90,8 +93,10 @@ class FinanceH2ResearchDomain(FinanceH2Domain):
         review_request = brief.get("review_request", user.get("review_request"))
         uses_profiles = rules_for(capabilities).has_profiles
         if (uses_profiles and role == "verifier" and review_request
-                and output_contract == {"name": "finance.review_report", "version": "1"}):
-            return await FinanceH2Domain._decide(messages, capabilities, final_output_model=ReviewReport)
+                and output_contract in ({"name": "finance.review_report", "version": "1"},
+                                        {"name": "finance.review_report", "version": "2"})):
+            model = ReviewReportV2 if output_contract["version"] == "2" else ReviewReport
+            return await FinanceH2Domain._decide(messages, capabilities, final_output_model=model)
         if (uses_profiles and role == "analyst" and role_version == "2.0.0"
                 and output_contract == {"name": "finance.analyst_result", "version": "2"}):
             return await FinanceH2Domain._decide(
@@ -162,9 +167,11 @@ class FinanceH2ResearchDomain(FinanceH2Domain):
             "review_workflow": _as_object(state.execution.get("review_workflow")),
             "output_json_schema_scope": "final.output",
             "output_json_schema": (
-                ReviewReport.model_json_schema()
+                (ReviewReportV2 if _has_contract(brief, "finance.review_report", "2")
+                 else ReviewReport).model_json_schema()
                 if (rules.has_profiles and role == "verifier" and brief.get("review_request")
-                    and _has_contract(brief, "finance.review_report", "1"))
+                    and (_has_contract(brief, "finance.review_report", "1")
+                         or _has_contract(brief, "finance.review_report", "2")))
                 else AnalystResearchResult.model_json_schema()
                 if analyst_v2
                 else TaskResult.model_json_schema()
@@ -341,7 +348,8 @@ class FinanceH2ResearchDomain(FinanceH2Domain):
                 "Bind evidence to explicitly authorized source references and disclose unchecked scope.",
             ],
             input_refs=list(dict.fromkeys([draft_ref, *source_refs])),
-            output_contract=OutputContract(name="finance.review_report", version="1"),
+            output_contract=OutputContract(name="finance.review_report",
+                                           version="2" if rules_for(capabilities).review_verdicts else "1"),
             review_request=request,
             requested_budget=request_budget,
         )
@@ -352,6 +360,7 @@ class FinanceH2ResearchDomain(FinanceH2Domain):
             "draft_ref": draft_ref,
             "draft_revision": revision,
             "draft_sha256": digest,
+            "review_scope": list(policy.scope),
             "review_targets": targets,
             "candidate_ref": candidate_ref,
             "prepared_spawn": spawn.model_dump(mode="json", exclude_none=True),
@@ -371,24 +380,33 @@ class FinanceH2ResearchDomain(FinanceH2Domain):
         return FinanceStep(status="continuing", state=next_state)
 
     async def _final_review(self, context, state, output, capabilities):
+        brief = _as_object(state.execution.get("research_brief"))
+        model = ReviewReportV2 if _has_contract(brief, "finance.review_report", "2") else ReviewReport
         try:
-            report = ReviewReport.model_validate(output, strict=True)
+            report = model.model_validate(output, strict=True)
         except (TypeError, ValidationError) as exc:
             raise DispatchError("contract_error", "Verifier requires a valid ReviewReport") from exc
-        brief = _as_object(state.execution.get("research_brief"))
         request = ReviewRequest.model_validate(brief.get("review_request"), strict=True)
         if (report.reviewed_draft_ref != request.draft_ref
                 or report.reviewed_revision != request.draft_revision):
-            raise DispatchError("contract_error", "ReviewReport draft binding does not match its task")
+            raise DispatchError("contract_error", "ReviewReport draft binding does not match its task", details={
+                "validation_stage": "review.binding", "validation_warnings": ["copy_review_request_draft_ref_and_revision"],
+            })
         allowed_targets = {target.target_id for target in request.targets}
         warnings = []
         if set(report.checked_target_ids) != allowed_targets:
             warnings.append("review_target_coverage_mismatch")
         if any(finding.target_id is not None and finding.target_id not in allowed_targets
                for finding in report.findings):
-            raise DispatchError("contract_error", "ReviewReport references an unknown target")
+            raise DispatchError("contract_error", "ReviewReport references an unknown target", details={
+                "validation_stage": "review.targets", "validation_warnings": ["use_only_review_request_target_ids"],
+            })
         if set(report.checked_scope) - set(request.scope):
-            raise DispatchError("contract_error", "ReviewReport checked outside its authorized scope")
+            raise DispatchError("contract_error", "ReviewReport checked outside its authorized scope", details={
+                "validation_stage": "review.scope", "validation_warnings": ["use_only_review_request_scope"],
+            })
+        if isinstance(report, ReviewReportV2) and set(report.checked_scope) != set(request.scope):
+            warnings.append("review_scope_coverage_mismatch")
 
         execution = dict(state.execution)
         known_refs = {
@@ -426,6 +444,10 @@ class FinanceH2ResearchDomain(FinanceH2Domain):
                     warnings.append(f"review_quote_mismatch:{quote.evidence_ref}")
         accepted_refs = sorted(report_evidence.intersection(source_texts).difference(invalid_quotes))
         warnings = list(dict.fromkeys(warnings))
+        if warnings and isinstance(report, ReviewReportV2):
+            raise DispatchError("contract_error", "ReviewReport failed source, quote or coverage validation", details={
+                "validation_stage": "review.evidence", "validation_warnings": warnings[:12],
+            })
         validation_status = "complete" if not warnings else "incomplete"
         report_ref = await capabilities.store_context({
             "schema_version": "finance.h2.review_report.v1",
@@ -448,9 +470,42 @@ class FinanceH2ResearchDomain(FinanceH2Domain):
         ))
 
     async def _final(self, context, state, output, capabilities, state_update_warnings=None):
+        try:
+            return await self._final_impl(context, state, output, capabilities, state_update_warnings)
+        except DispatchError as exc:
+            if (not rules_for(capabilities).review_verdicts or exc.code != "contract_error"
+                    or not exc.details):
+                raise
+            execution = dict(state.execution)
+            count = int(execution.get("domain_contract_corrections", 0))
+            if count >= 5:
+                raise DispatchError("contract_error", "domain correction limit reached", details=exc.details) from exc
+            from .diagnostics import safe_text
+
+            details = {key: [safe_text(item)[:320] for item in value[:12]] for key, value in exc.details.items()
+                       if key in {"missing_finding_ids", "unknown_finding_ids", "validation_warnings"}
+                       and isinstance(value, list)}
+            observation = {
+                "schema_version": "finance.h2.action_observation.v1", "tool_name": "final", "status": "failed",
+                "error": {"code": "contract_error", "validation_stage": exc.details.get("validation_stage", "review.dispositions"),
+                          "message": safe_text(str(exc))[:500], **details},
+                "instruction": "Correct the listed fields using trusted task state and authorized sources. "
+                               "Only review_workflow.finding_ids belong in formal dispositions. "
+                               "Copy source quotes exactly. No research result has been accepted by this failed submission.",
+                "correction_number": count + 1, "correction_limit": 5,
+            }
+            ref = await capabilities.store_context(observation)
+            execution["domain_contract_corrections"] = count + 1
+            execution["action_observation_refs"] = [*execution.get("action_observation_refs", []), ref]
+            return FinanceStep(status="continuing", state=state.model_copy(update={
+                "execution": execution, "revision": state.revision + 1,
+            }))
+
+    async def _final_impl(self, context, state, output, capabilities, state_update_warnings=None):
         brief = _as_object(state.execution.get("research_brief"))
         if (rules_for(capabilities).has_profiles and brief.get("role") == "verifier"
-                and brief.get("review_request") and _has_contract(brief, "finance.review_report", "1")):
+                and brief.get("review_request") and (_has_contract(brief, "finance.review_report", "1")
+                                                     or _has_contract(brief, "finance.review_report", "2"))):
             return await self._final_review(context, state, output, capabilities)
         analyst_v2 = (rules_for(capabilities).has_profiles and brief.get("role") == "analyst"
                       and brief.get("role_version") == "2.0.0"
@@ -615,12 +670,44 @@ class FinanceH2ResearchDomain(FinanceH2Domain):
             ).encode("utf-8")).hexdigest()
             same_reviewed_draft = report_ready and draft_digest == workflow.get("draft_sha256")
             decision = analyst_output.review_decision
-            must_request = policy.mode == "required" and not report_ready
-            should_request = policy.mode != "off" and (decision == "request" or must_request)
+            strict_review = rules_for(capabilities).review_verdicts
+            unresolved = [item.finding_id for item in dispositions.values() if item.disposition == "unresolved"]
+            raw_approvals = workflow.get("approved_drafts")
+            approved_drafts = ([item for item in raw_approvals if isinstance(item, Mapping)]
+                               if isinstance(raw_approvals, list) else [])
+            approval = next((item for item in reversed(approved_drafts)
+                             if item.get("draft_sha256") == draft_digest
+                             and item.get("review_scope") == list(policy.scope)
+                             and item.get("verdict") == "passed"
+                             and not item.get("blocking_finding_ids")), None) if strict_review else None
+            if same_reviewed_draft and workflow.get("verdict") != "passed":
+                approval = None
+            if (strict_review and approval is None and same_reviewed_draft
+                    and workflow.get("verdict") == "passed"):
+                approval = {
+                    "draft_sha256": workflow.get("draft_sha256"),
+                    "draft_ref": workflow.get("reviewed_draft_ref") or workflow.get("draft_ref"),
+                    "draft_revision": workflow.get("reviewed_revision") or workflow.get("draft_revision"),
+                    "report_ref": workflow.get("report_ref"),
+                    "report_material_ref": workflow.get("report_material_ref"),
+                    "review_scope": list(policy.scope),
+                    "verdict": "passed",
+                    "verdict_reason": workflow.get("verdict_reason"),
+                    "blocking_finding_ids": workflow.get("blocking_finding_ids", []),
+                }
+            approved = strict_review and approval is not None and not unresolved
+            must_request = policy.mode == "required" and (
+                not approved if strict_review else not report_ready
+            )
+            should_request = policy.mode != "off" and (
+                must_request or (decision == "request" and not (strict_review and approved))
+            )
             depth_exhausted = context.brief.get("depth", 1) >= 2
             if should_request and not depth_exhausted and rounds < min(policy.max_rounds, 5):
                 if not analyst_output.review_targets:
-                    raise DispatchError("contract_error", "required article review needs at least one target")
+                    raise DispatchError("contract_error", "required article review needs at least one target", details={
+                        "validation_stage": "review.targets", "validation_warnings": ["provide_at_least_one_review_target"],
+                    })
                 return await self._prepare_review(
                     context, state, result=result, candidate=analyst_output,
                     candidate_ref=candidate_ref, known_refs=known_refs,
@@ -640,8 +727,14 @@ class FinanceH2ResearchDomain(FinanceH2Domain):
                 if decision == "request":
                     review_incomplete = True
                     review_warnings.append("review_request_blocked_by_task_policy")
+            elif strict_review and approved:
+                review_status = "passed"
             elif report_ready:
-                if same_reviewed_draft:
+                if strict_review:
+                    review_status = "issues_open"
+                    review_incomplete = True
+                    review_warnings.append("final_review_not_passed")
+                elif same_reviewed_draft:
                     unresolved = [item.finding_id for item in dispositions.values()
                                   if item.disposition == "unresolved"]
                     review_status = "issues_open" if unresolved else "reviewed_with_resolutions"
@@ -666,22 +759,44 @@ class FinanceH2ResearchDomain(FinanceH2Domain):
                 review_status = "review_failed"
                 review_incomplete = True
                 review_warnings.append("required_review_not_completed")
+            review_binding = approval if strict_review and approved else workflow
             review_summary = {
                 "policy": policy.model_dump(mode="json"),
                 "status": review_status,
                 "rounds": rounds,
-                "draft_ref": workflow.get("draft_ref"),
-                "draft_revision": workflow.get("draft_revision"),
+                "draft_ref": review_binding.get("draft_ref", workflow.get("draft_ref")),
+                "draft_revision": review_binding.get("draft_revision", workflow.get("draft_revision")),
+                "report_ref": review_binding.get("report_ref"),
+                "reused_approval": bool(approved and not same_reviewed_draft),
                 "report_refs": list(workflow.get("report_refs") or []),
                 "failure_code": workflow.get("failure_code"),
                 "decision_reason": analyst_output.review_decision_reason,
                 "dispositions": [item.model_dump(mode="json")
                                  for item in analyst_output.review_dispositions],
+                **({"verdict": review_binding.get("verdict", workflow.get("verdict")),
+                    "verdict_reason": review_binding.get("verdict_reason", workflow.get("verdict_reason")),
+                    "blocking_finding_ids": review_binding.get(
+                        "blocking_finding_ids", workflow.get("blocking_finding_ids", []),
+                    )} if strict_review else {}),
             }
             workflow["status"] = review_status
+            if strict_review and approved and approval is not None:
+                workflow.update(
+                    draft_ref=approval.get("draft_ref"),
+                    draft_revision=approval.get("draft_revision"),
+                    draft_sha256=draft_digest,
+                    reviewed_draft_ref=approval.get("draft_ref"),
+                    reviewed_revision=approval.get("draft_revision"),
+                    report_ref=approval.get("report_ref"),
+                    report_material_ref=approval.get("report_material_ref"),
+                    verdict="passed",
+                    verdict_reason=approval.get("verdict_reason"),
+                    blocking_finding_ids=[],
+                )
+                workflow.pop("failure_code", None)
             execution["review_workflow"] = workflow
 
-        ref = await capabilities.store_context({
+        delivery_artifact = {
             "schema_version": "finance.h2.analyst_result.v1",
             "result": original, "candidate_ref": candidate_ref,
             "validation_status": "complete", "validation_warnings": validation_warnings,
@@ -690,7 +805,10 @@ class FinanceH2ResearchDomain(FinanceH2Domain):
             **({"review": review_summary,
                 "review_targets": [target.model_dump(mode="json") for target in analyst_output.review_targets]}
                if analyst_v2 else {}),
-        })
+        }
+        if analyst_v2:
+            delivery_artifact["review_status"] = build_review_status(delivery_artifact)
+        ref = await capabilities.store_context(delivery_artifact)
         source_ref = await capabilities.store_context({
             "schema_version": "finance.h2.source_lineage.v1", "bindings": source_reads,
         }) if source_reads else None

@@ -1,10 +1,27 @@
 # 金融 Agent 设计入口
 
-更新时间：2026-10-28。用户已确认：新项目以仓库 Markdown 为设计权威，飞书不再作为后续开发的必需依赖。
+更新时间：2026-10-29。用户已确认：新项目以仓库 Markdown 为设计权威，飞书不再作为后续开发的必需依赖。
 
 快速阅读：[1.0 系统总览与策略地图](system-overview-v1.md)汇总当前流程、Prompt/Skills 关联、上下文的不同层次、多 Agent/存储边界和验证证据，再链接下列权威细节，不另外定义一套规则。[013 Harness 2.0 Agent 调度设计基线](changes/013-harness-v2-dispatch-baseline.md)是已冻结的调度语义基线；用户已确认三份细化契约，调度底座实现和剩余金融接入见 [014](changes/014-harness-v2-foundation.md)，队列压力、服务循环和安全清理补充见 [020](changes/020-dispatch-pressure-and-stream-retention.md)，验收 Query 的诊断/全量选择边界见 [021](changes/021-acceptance-query-selection.md)，供应方文本动作兼容见 [022](changes/022-text-action-compatibility.md)，状态版本不变量修复见 [023](changes/023-finance-state-revision-invariant.md)，C16 兼容回归见 [024](changes/024-harness-v2-c16-compatibility.md)，金融状态增量协议见 [026](changes/026-finance-state-update-protocol.md)。金融 Root 接入边界见 [017](changes/017-harness-v2-finance-loop-integration.md)。最新代码级 C01-C18 审查见[Harness 2.0 代码级验收报告](acceptance/harness-v2-code-acceptance-20261018.md)，跟进结果见[2026-10-19 验收跟进](acceptance/harness-v2-code-acceptance-followup-20261019.md)，DeepSeek 定向复验见[金融定向复验报告](acceptance/finance-live-acceptance-r3-20261019.md)。[012 Agent Dispatch Design](changes/012-agent-dispatch-design.md)保留为早期讨论稿；[Harness 2.0 多 Agent 研究方案](proposals/harness-v2-multi-agent.md)保留 Codex 调研依据，011 是较早的总体候选。
 
 ## 1. 从哪里开始
+
+[113 Runtime 核验状态与分析快照分离](changes/113-runtime-review-status-presentation.md)
+当前状态由已保存的核验记录生成，父 Agent 完整读取后取得；工作台、资料阅读和 Markdown
+导出使用同一状态。历史正文保留并标明快照时点，外部事实缺口继续保留，不把子任务通过扩大为主报告通过。
+扩大回归 538、最后补丁定向 28、前端 11 项通过；真实归档、手机/桌面与导出证据见
+[113 验收记录](acceptance/h2-review-status-presentation-20261029.md)，本轮无新增模型调用。
+
+[2026-10-29 核验状态与交付文字一致性审查](acceptance/h2-review-text-reliability-20261029.md)
+只读复核两批真实记录、1,141 份 Artifact 和四组当前代码反例；相关门控回归 37 项通过，无新增模型调用。
+精确通过稿绑定成立，但过期流程文字仍可随 passed 草稿交付；提示词分离要求未提供可靠保证。
+报告区分当前事实与未实施的最小改进建议，不更改既有核验合同或历史结果。
+
+[111 核验放行与显式派发约束](changes/111-review-verdict-and-explicit-dispatch-policy.md)
+用户已批准并实现：新 Run 每次明确 Analyst 核验模式；可由工作台冻结本轮约束；required
+只允许 Verifier 通过准确最终版本后成功交付，否则继续核验或触顶 partial。可纠正的引用/编号
+合同错误返回有界反馈。离线和 DeepSeek SCH-02/03 复验事实、Trace 与验收结论见
+[111 定向复验记录](acceptance/h2-review-policy-scheduling-20261028.md)。
 
 [2026-10-28 调度 Trace 二次复核](acceptance/h2-agent-scheduling-trace-reaudit-20261028.md)
 只读核对四题的 SQLite、原始 Trace 与 962 份 Artifact，另有 61 项定向离线回归通过；本次无新增付费调用。

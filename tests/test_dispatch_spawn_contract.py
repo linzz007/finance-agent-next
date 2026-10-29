@@ -117,6 +117,8 @@ def test_spawn_description_exposes_compact_fields_and_profile_specific_options()
     }
     assert all("versions" not in profile and "available_tools" not in profile
                for profile in description["profiles"])
+    assert "omitted review_options.max_rounds uses five" in description["description"]
+    assert "only when the user explicitly requests it" in description["description"]
 
 
 def test_requested_budget_remains_available_only_for_historical_policy():

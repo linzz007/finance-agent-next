@@ -56,7 +56,7 @@
       "source_required": true,
       "review_mode": "required",
       "review_options": {"instructions": "Check whether the author's condition survived the summary."},
-      "expected_review_status": "reviewed_with_resolutions",
+      "expected_review_status": "passed",
       "expected_review_rounds": 2,
       "output_contract": {"name": "finance.analyst_result", "version": "2"},
       "content": "The view remains conditional. The final summary retains the author's stated condition."

@@ -69,6 +69,15 @@ def test_snapshot_copies_are_immutable_and_json_literals_are_not_template_variab
         rules.text("root", arbitrary="injected")
 
 
+def test_review_round_cap_defaults_to_five_unless_the_user_requests_less():
+    rules = load_rules()
+    root = rules.system({})
+    analyst = rules.system({}, role="analyst")
+
+    assert "Set a smaller cap only when the user explicitly asks for fewer rounds" in root
+    assert "Use the Runtime default of five review rounds unless the user explicitly requests a smaller maximum" in analyst
+
+
 @pytest.mark.parametrize("change", ["bundle-hash", "asset-hash", "unknown-field", "extra-role", "extra-tool", "placeholder", "path", "model"])
 def test_invalid_or_authority_expanding_rule_snapshots_are_rejected(change):
     snapshot = load_rules().snapshot()
@@ -182,6 +191,7 @@ def test_new_runs_freeze_rules_while_replay_restore_children_and_grandchildren_k
         (2, "verifier", "1.0.0", {"name": "finance.research_result", "version": "1"}),
     ):
         child = repo.spawn(parent, Spawn(dispatch_key=f"child-{depth}", role=role, role_version=role_version,
+                                       **({"review_mode": "auto"} if role == "analyst" else {}),
                                         objective="Analyze the assigned issue.", success_criteria=["Preserve conditions."],
                                         input_refs=[], output_contract=output_contract))["data"]
         lease = _claim(repo, child["task_id"])
@@ -239,7 +249,7 @@ def test_repository_enforces_review_grants_round_limit_and_parent_profile(tmp_pa
         task_instructions="Check only the requested target.",
         success_criteria=["Return a version-bound ReviewReport."],
         input_refs=[draft_ref, source_ref],
-        output_contract={"name": "finance.review_report", "version": "1"},
+        output_contract={"name": "finance.review_report", "version": "2"},
         review_request=request,
     )
     created = repo.spawn(analyst_lease.caller(), review_spawn)["data"]
@@ -262,7 +272,7 @@ def test_repository_enforces_review_grants_round_limit_and_parent_profile(tmp_pa
         dispatch_key="root-cannot-review", role="verifier", role_version="1.0.0",
         objective="Review a draft.", success_criteria=["Return a report."],
         input_refs=[draft_ref, source_ref],
-        output_contract={"name": "finance.review_report", "version": "1"},
+        output_contract={"name": "finance.review_report", "version": "2"},
         review_request=request,
     )
     with pytest.raises(DispatchError) as root_denied:

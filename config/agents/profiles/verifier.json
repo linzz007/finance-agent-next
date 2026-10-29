@@ -44,6 +44,7 @@
     "finance.research_task@1"
   ],
   "output_contracts": [
+    "finance.review_report@2",
     "finance.review_report@1",
     "finance.research_result@1",
     "finance.child@1"

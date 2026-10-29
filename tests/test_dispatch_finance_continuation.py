@@ -84,6 +84,7 @@ def _spawn(key, role, refs, *, calls=12, wall_ms=300_000):
         "task_name": key,
         "message": f"{key}: preserve the assigned source conditions",
         "profile": role,
+        **({"profile_options": {"review_mode": "auto"}} if role == "analyst" else {}),
         "success_criteria": ["Use only granted sources and disclose unread material"],
         "input_refs": refs,
         "requested_budget": {"model_calls": calls, "wall_time_ms": wall_ms},

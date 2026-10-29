@@ -9,6 +9,16 @@
   color: var(--ink); background: var(--canvas); font-size: var(--text-body); letter-spacing: 0;
   font-variant-numeric: tabular-nums; color-scheme: light;
 }
+.review-status-list { margin: 14px 0; padding: 14px 0; border-block: 1px solid var(--line); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.review-status-item + .review-status-item { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.review-status-heading { display: flex; align-items: center; gap: 8px; color: var(--ink); }
+.review-status-heading svg { width: 16px; height: 16px; flex-shrink: 0; }
+.review-status-list p { margin: 6px 0; line-height: 1.65; color: var(--muted); }
+.review-status-list code { display: block; font-size: var(--text-xs); overflow-wrap: anywhere; }
+.review-notice { font-size: var(--text-xs); color: var(--muted); line-height: 1.65; }
+.review-objective { max-height: 5em; overflow: auto; }
+#artifact-review-status { padding: 0 24px; }
+#artifact-review-status .review-status-list { margin-block: 8px; }
 * { box-sizing: border-box; }
 body { margin: 0; display: grid; grid-template-columns: 238px minmax(360px, 1fr) 352px; height: 100dvh; overflow: hidden; }
 body.inspector-collapsed { grid-template-columns: 238px minmax(0, 1fr); }
@@ -150,6 +160,8 @@ textarea::placeholder { color: #898078; }
 .composer-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 6px; }
 .composer-actions>div { display: flex; gap: 5px; } #run-status { font-size: 11px; color: var(--muted); }
 .composer-actions .primary { padding-inline: 16px 12px; }
+.research-options { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; margin-block: 5px; }
+.research-options select { width: 150px; border: 1px solid var(--line); padding: 4px 8px; color: var(--ink); }
 .workspace-footer { display: flex; align-items: center; justify-content: space-between; padding: 0 28px 14px; gap: 8px; color: var(--muted); font-size: 9px; }
 .workspace-footer span:first-child { font-weight: 600; }
 .archive-banner { padding: 10px 28px; border-bottom: 1px solid var(--line); background: #F5F1ED; color: var(--muted); display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 10px; min-height: 38px; }

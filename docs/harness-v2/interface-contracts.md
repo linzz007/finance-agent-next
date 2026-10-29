@@ -18,6 +18,16 @@
 
 ## 1.1 C16 兼容性状态
 
+2026-10-29 用户批准 [113](../changes/113-runtime-review-status-presentation.md)：Analyst
+最终结果包装新增只读 `review_status: finance.h2.review_status.v1`，位于被核验的
+`result/review_targets` 之外，由 Runtime 从持久化 `review` 生成，模型不填写。
+字段包括 `status/label/verdict/scope/scope_labels/mode/rounds/max_rounds`、
+`draft_ref/draft_revision/report_ref` 和快照/范围说明。`passed` 必须同时有通过判定、
+草稿版本和报告引用且无阻塞项；历史 `reviewed_with_resolutions` 不补造通过判定。
+父 Agent 完整取得子结果后，将相同投影保存到检查点并在后续上下文的
+`child_review_statuses` 中展示；未读全不登记，不替代证据授权或全文读取。
+旧结果在读取时兼容投影，不重写原 Artifact，不变更完整结果哈希门控或历史结论。
+
 2026-10-24 用户确认 [102](../changes/102-h2-five-action-corrections.md)：新 Run 的 Root/子/孙
 每次决策在首次生成后最多补正五次，成功即停；以下历史“一次补正/最多三次物理请求”不再适用于新规则快照。
 所有补正共享最多一次额外传输重发，故每决策至多七次物理请求，受原模型、预算和截止时间约束。
@@ -748,10 +758,19 @@ Profile 清单只向 Root 展示用途和输入要求，不展示版本号或全
 `tool.describe(name="agent.spawn")` 读取参数和当前 Profile 摘要。`general` 返回
 `finance.task_result.v1`，专家使用已注册的专业返回合同。配置不能增加代码未提供的工具或校验器。
 Analyst 专属核验设置位于 `profile_options.review_mode` 和 `profile_options.review_options`，
-分别控制 `required | auto | off` 与可选范围、说明及更小轮数；省略时按 Analyst Profile 默认处理，
+分别控制 `required | auto | off` 与可选范围、说明及更小轮数；历史 v4 省略时按 Analyst Profile 默认处理，
 默认及硬上限为五轮。Runtime 展开成持久化 Brief.review_policy；这些字段对其他 Profile 无效。
 核验设置不扩大来源权限；版本绑定及逐项处置沿用 103。已启动 v1/v2/v3 Run 仍按自身冻结快照
 使用旧派发 Schema，不受 v4 模型侧入口影响。
+
+2026-10-28 的 [111](../changes/111-review-verdict-and-explicit-dispatch-policy.md) 为新 Run 冻结 v5：
+每次 Analyst 派发必填 `profile_options.review_mode`，可选 Run 级
+`dispatch_constraints.analyst_review_mode` 由可信入口冻结，所有深度不得违背。
+正式核验采用 `finance.review_report.v2`，新增必填 `verdict`、`verdict_reason`、
+`blocking_finding_ids`。`required` 成功必须由 Verifier 对最终完整研究结果与目标的准确版本
+判定 `passed`；存在重大阻塞意见或范围内未完成检查不能通过。改稿/未通过自动继续核验，
+最多五轮，触顶 partial。可纠正的领域合同错误以有界失败观察返回，同 Task 最多五次补正，
+不扩大原模型、预算和时间。v1-v4 Run 继续使用自身冻结的旧语义。
 
 文档引用、DDL 和示例格式检查只证明契约可检验，不证明运行实现。R1/R2/R3 已确认，后续代码、故障验证与金融接入的实际进度分别记在 014，不回写 draft1 时点的验证结果。
 

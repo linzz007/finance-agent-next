@@ -123,6 +123,7 @@ class FinanceHarnessV2Service:
         allowed_profiles: list[str],
         tools: list[str],
         research_clock: dict | None = None,
+        dispatch_constraints: dict | None = None,
     ) -> FinanceRunHandle:
         """Create a run with an explicit model/profile and permission snapshot."""
         with self.repository.db.connection() as connection:
@@ -138,6 +139,7 @@ class FinanceHarnessV2Service:
             allowed_profiles=allowed_profiles,
             tools=tools,
             **({"research_clock": research_clock} if research_clock is not None else {}),
+            **({"dispatch_constraints": dispatch_constraints} if dispatch_constraints is not None else {}),
             **({"instruction_rules": rules} if rules is not None else {}),
         )
         data = receipt["data"]

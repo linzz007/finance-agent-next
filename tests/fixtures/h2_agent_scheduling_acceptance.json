@@ -1,5 +1,9 @@
 {
   "schema_version": "finance.h2.agent_scheduling_acceptance.v1",
+  "dispatch_constraints_by_case": {
+    "SCH-02": {"analyst_review_mode": "required"},
+    "SCH-03": {"analyst_review_mode": "off"}
+  },
   "cases": [
     {
       "id": "SCH-01",
